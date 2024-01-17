@@ -66,10 +66,10 @@ fi
 ####
 clear
 sleep 1
-PROXY_NETWORK=$(echo $PROXY_NETWORK | awk -F:: '{print $1}')
+PROXY_NETWORK=$(echo $PROXY_NETWORK | awk -F:: '{print $2}')
 echo "● Network: $PROXY_NETWORK"
 echo "● Network Mask: $PROXY_NET_MASK"
-HOST_IPV4_ADDR=$(hostname -I | awk '{print $1}')
+HOST_IPV4_ADDR=$(hostname -I | awk '{print $2}')
 echo "● Host IPv4 address: $HOST_IPV4_ADDR"
 echo "● Tunnel IPv4 address: $TUNNEL_IPV4_ADDR"
 echo "● Proxies count: $PROXY_COUNT, starting from port: $PROXY_START_PORT"
