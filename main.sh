@@ -1,5 +1,18 @@
 #!/bin/bash
 
+# Set up logging
+exec > >(tee -a "/tmp/proxy_setup.log") 2>&1
+
+echo "Starting proxy setup script at $(date)"
+
+# Function to check command success
+check_command() {
+    if ! $@; then
+        echo "Error: Failed to execute command: $@" >&2
+        exit 1
+    fi
+}
+
 if ping6 -c3 google.com &>/dev/null; then
   echo "Your server is ready to set up IPv6 proxies!"
 else
@@ -25,7 +38,7 @@ fi
 echo "↓ Server IPv4 address from tunnelbroker:"
 read TUNNEL_IPV4_ADDR
 if [[ ! "$TUNNEL_IPV4_ADDR" ]]; then
-  echo "● IPv4 address can't be emty"
+  echo "● IPv4 address can't be empty"
   exit 1
 fi
 
@@ -36,8 +49,8 @@ read PROXY_LOGIN
 if [[ "$PROXY_LOGIN" ]]; then
   echo "↓ Proxies password:"
   read PROXY_PASS
-  if [[ ! "PROXY_PASS" ]]; then
-    echo "● Proxies pass can't be emty"
+  if [[ ! "$PROXY_PASS" ]]; then
+    echo "● Proxies pass can't be empty"
     exit 1
   fi
 fi
@@ -59,17 +72,17 @@ fi
 ####
 echo "↓ Proxies protocol (http, socks5; default http):"
 read PROXY_PROTOCOL
-if [[ PROXY_PROTOCOL != "socks5" ]]; then
+if [[ $PROXY_PROTOCOL != "socks5" ]]; then
   PROXY_PROTOCOL="http"
 fi
 
 ####
 clear
 sleep 1
-PROXY_NETWORK=$(echo $PROXY_NETWORK | awk -F:: '{print $2}')
+PROXY_NETWORK=$(echo $PROXY_NETWORK | awk -F:: '{print $1}')
 echo "● Network: $PROXY_NETWORK"
 echo "● Network Mask: $PROXY_NET_MASK"
-HOST_IPV4_ADDR=$(hostname -I | awk '{print $2}')
+HOST_IPV4_ADDR=$(hostname -I | awk '{print $1}')
 echo "● Host IPv4 address: $HOST_IPV4_ADDR"
 echo "● Tunnel IPv4 address: $TUNNEL_IPV4_ADDR"
 echo "● Proxies count: $PROXY_COUNT, starting from port: $PROXY_START_PORT"
@@ -82,8 +95,16 @@ fi
 ####
 echo "-------------------------------------------------"
 echo ">-- Updating packages and installing dependencies"
-apt-get update >/dev/null 2>&1
-apt-get -y install gcc g++ make bc pwgen git >/dev/null 2>&1
+check_command apt-get update
+check_command apt-get -y install gcc g++ make bc pwgen git
+
+# Verify package installation
+for pkg in gcc g++ make bc pwgen git; do
+  if ! dpkg -s $pkg >/dev/null 2>&1; then
+    echo "Error: Failed to install $pkg" >&2
+    exit 1
+  fi
+done
 
 ####
 echo ">-- Setting up sysctl.conf"
@@ -120,10 +141,10 @@ END
 ####
 echo ">-- Setting up ndppd"
 cd ~
-git clone --quiet https://github.com/DanielAdolfsson/ndppd.git >/dev/null
+check_command git clone --quiet https://github.com/DanielAdolfsson/ndppd.git
 cd ~/ndppd
-make -k all >/dev/null 2>&1
-make -k install >/dev/null 2>&1
+check_command make -k all
+check_command make -k install
 cat >~/ndppd/ndppd.conf <<END
 route-ttl 30000
 proxy he-ipv6 {
@@ -139,8 +160,8 @@ END
 ####
 echo ">-- Setting up 3proxy"
 cd ~
-wget -q https://github.com/z3APA3A/3proxy/archive/0.8.13.tar.gz
-tar xzf 0.8.13.tar.gz
+check_command wget -q https://github.com/z3APA3A/3proxy/archive/0.8.13.tar.gz
+check_command tar xzf 0.8.13.tar.gz
 mv ~/3proxy-0.8.13 ~/3proxy
 rm 0.8.13.tar.gz
 cd ~/3proxy
@@ -148,7 +169,7 @@ chmod +x src/
 touch src/define.txt
 echo "#define ANONYMOUS 1" >src/define.txt
 sed -i '31r src/define.txt' src/proxy.h
-make -f Makefile.Linux >/dev/null 2>&1
+check_command make -f Makefile.Linux
 cat >~/3proxy/3proxy.cfg <<END
 #!/bin/bash
 
@@ -233,5 +254,30 @@ END
 /bin/chmod +x /etc/rc.local
 
 ####
-echo "Finishing and rebooting"
+echo ">-- Verifying setup"
+
+# Check if services are running
+if ! pgrep ndppd >/dev/null; then
+  echo "Error: ndppd is not running" >&2
+  exit 1
+fi
+
+if ! pgrep 3proxy >/dev/null; then
+  echo "Error: 3proxy is not running" >&2
+  exit 1
+fi
+
+# Check IPv6 connectivity
+if ! ping6 -c3 google.com &>/dev/null; then
+  echo "Error: IPv6 connectivity not working after setup" >&2
+  exit 1
+fi
+
+# Check IPv6 tunnel
+if ! ip -6 addr show dev he-ipv6 >/dev/null 2>&1; then
+  echo "Error: IPv6 tunnel (he-ipv6) is not set up correctly" >&2
+  exit 1
+fi
+
+echo "Setup completed successfully. Rebooting now..."
 reboot now
