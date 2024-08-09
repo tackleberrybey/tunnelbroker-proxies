@@ -168,7 +168,7 @@ network:
       dhcp4: yes
   tunnels:
     he-ipv6:
-      type: sit # Corrected key
+      type: sit 
       local: ${HOST_IPV4_ADDR}
       remote: ${TUNNEL_IPV4_ADDR}
       addresses: [${PROXY_NETWORK}::2/64]
