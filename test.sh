@@ -33,9 +33,12 @@ read PROXY_USER
 echo "Enter the proxy password:"
 read -s PROXY_PASS
 
+# Validate and format IPv6 prefix
+IPV6_PREFIX_EXPANDED=$(echo $IPV6_PREFIX | cut -d'/' -f1 | sed 's/://g' | sed 's/.\{4\}/&:/g' | sed 's/:$//')
+IPV6_PREFIX_MASK=$(echo $IPV6_PREFIX | cut -d'/' -f2)
+
 # Generate IPv6 addresses
 echo "Generating IPv6 addresses..."
-IPV6_PREFIX_EXPANDED=$(echo $IPV6_PREFIX | cut -d'/' -f1)
 for i in $(seq 1 $IP_COUNT); do
     printf "%s:%04x:%04x:%04x:%04x\n" $IPV6_PREFIX_EXPANDED $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536))
 done > ip.list
@@ -62,7 +65,7 @@ cat << EOF | sudo tee -a /etc/network/interfaces
 auto he-ipv6
 iface he-ipv6 inet6 v4tunnel
         address ${IPV6_PREFIX_EXPANDED}::2
-        netmask 64
+        netmask ${IPV6_PREFIX_MASK}
         endpoint 185.181.60.47
         local 188.245.99.243
         ttl 255
