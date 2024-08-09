@@ -21,7 +21,6 @@ else
   exit 1
 fi
 
-####
 echo "↓ Routed /48 or /64 IPv6 prefix from tunnelbroker (*:*:*::/*):"
 read PROXY_NETWORK
 
@@ -34,7 +33,6 @@ else
   exit 1
 fi
 
-####
 echo "↓ Server IPv4 address from tunnelbroker:"
 read TUNNEL_IPV4_ADDR
 if [[ ! "$TUNNEL_IPV4_ADDR" ]]; then
@@ -42,7 +40,6 @@ if [[ ! "$TUNNEL_IPV4_ADDR" ]]; then
   exit 1
 fi
 
-####
 echo "↓ Proxies login (can be blank):"
 read PROXY_LOGIN
 
@@ -55,28 +52,24 @@ if [[ "$PROXY_LOGIN" ]]; then
   fi
 fi
 
-####
 echo "↓ Port numbering start (default 1500):"
 read PROXY_START_PORT
 if [[ ! "$PROXY_START_PORT" ]]; then
   PROXY_START_PORT=1500
 fi
 
-####
 echo "↓ Proxies count (default 1):"
 read PROXY_COUNT
 if [[ ! "$PROXY_COUNT" ]]; then
   PROXY_COUNT=1
 fi
 
-####
 echo "↓ Proxies protocol (http, socks5; default http):"
 read PROXY_PROTOCOL
 if [[ $PROXY_PROTOCOL != "socks5" ]]; then
   PROXY_PROTOCOL="http"
 fi
 
-####
 clear
 sleep 1
 PROXY_NETWORK=$(echo $PROXY_NETWORK | awk -F:: '{print $1}')
@@ -92,21 +85,19 @@ if [[ "$PROXY_LOGIN" ]]; then
   echo "● Proxies password: $PROXY_PASS"
 fi
 
-####
 echo "-------------------------------------------------"
 echo ">-- Updating packages and installing dependencies"
 check_command apt-get update
-check_command apt-get -y install gcc g++ make bc pwgen git net-tools
+check_command apt-get -y install gcc g++ make bc pwgen git
 
 # Verify package installation
-for pkg in gcc g++ make bc pwgen git net-tools; do
+for pkg in gcc g++ make bc pwgen git; do
   if ! dpkg -s $pkg >/dev/null 2>&1; then
     echo "Error: Failed to install $pkg" >&2
     exit 1
   fi
 done
 
-####
 echo ">-- Setting up sysctl.conf"
 cat >>/etc/sysctl.conf <<END
 net.ipv6.conf.eth0.proxy_ndp=1
@@ -124,11 +115,9 @@ vm.max_map_count=6000000
 kernel.pid_max=2000000
 END
 
-####
 echo ">-- Setting up logind.conf"
 echo "UserTasksMax=1000000" >>/etc/systemd/logind.conf
 
-####
 echo ">-- Setting up system.conf"
 cat >>/etc/systemd/system.conf <<END
 UserTasksMax=1000000
@@ -138,14 +127,10 @@ DefaultTasksMax=1000000
 UserTasksMax=1000000
 END
 
-####
 echo ">-- Setting up ndppd"
 cd ~
 check_command git clone --quiet https://github.com/DanielAdolfsson/ndppd.git
 cd ~/ndppd
-
-# Suppress -Wunused-result warning during compilation (if it appears)
-sed -i 's/system(/system(//g' src/session.cc
 check_command make -k all
 check_command make -k install
 cat >~/ndppd/ndppd.conf <<END
@@ -160,34 +145,6 @@ proxy he-ipv6 {
 }
 END
 
-####
-echo ">-- Setting up Netplan for IPv6 Tunnel"
-
-cat >/etc/netplan/99-ipv6-tunnel.yaml <<END
-network:
-  version: 2
-  ethernets:
-    eth0: # Make sure this is your actual network interface
-      dhcp4: yes
-  tunnels:
-    he-ipv6:
-      interface-type: sit  # Correct key for your Netplan version
-      local: ${HOST_IPV4_ADDR}
-      remote: ${TUNNEL_IPV4_ADDR}
-      addresses: [${PROXY_NETWORK}::2/64]
-      routes:
-        - to: 2000::/3
-          via: ${PROXY_NETWORK}::1
-        - to: default
-          via: ${PROXY_NETWORK}::1
-END
-
-# Fix file permissions
-chmod 600 /etc/netplan/99-ipv6-tunnel.yaml
-
-check_command netplan apply
-
-####
 echo ">-- Setting up 3proxy"
 cd ~
 check_command wget -q https://github.com/z3APA3A/3proxy/archive/0.8.13.tar.gz
@@ -226,7 +183,6 @@ auth none
 END
 fi
 
-####
 echo ">-- Generating IPv6 addresses"
 touch ~/ip.list
 touch ~/tunnels.txt
@@ -243,7 +199,6 @@ generate_proxy() {
   e=${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}
 
   echo "$PROXY_NETWORK:$a:$b:$c:$d$([ $PROXY_NET_MASK == 48 ] && echo ":$e" || echo "")" >>~/ip.list
-
 }
 
 while [ "$PROXY_GENERATING_INDEX" -le $PROXY_COUNT ]; do
@@ -258,9 +213,43 @@ for e in $(cat ~/ip.list); do
   let "CURRENT_PROXY_PORT+=1"
 done
 
-####
-echo ">-- Setting up rc.local"
-cat >/etc/rc.local <<END
+echo ">-- Creating IPv6 tunnel setup service"
+cat > /etc/systemd/system/ipv6-tunnel.service <<EOL
+[Unit]
+Description=IPv6 Tunnel Setup
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/setup-ipv6-tunnel.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+echo ">-- Creating IPv6 tunnel setup script"
+cat > /usr/local/bin/setup-ipv6-tunnel.sh <<EOL
+#!/bin/bash
+
+# IPv6 Tunnel Setup
+/sbin/ip tunnel add he-ipv6 mode sit remote ${TUNNEL_IPV4_ADDR} local ${HOST_IPV4_ADDR} ttl 255
+/sbin/ip link set he-ipv6 up
+/sbin/ip addr add ${PROXY_NETWORK}::2/64 dev he-ipv6
+/sbin/ip -6 route add default via ${PROXY_NETWORK}::1 dev he-ipv6
+/sbin/ip -6 route add ${PROXY_NETWORK}::/64 dev he-ipv6
+
+# Enable IPv6 forwarding
+sysctl -w net.ipv6.conf.all.forwarding=1
+
+# Start ndppd
+systemctl start ndppd
+EOL
+
+chmod +x /usr/local/bin/setup-ipv6-tunnel.sh
+
+echo ">-- Updating rc.local"
+cat > /etc/rc.local <<EOL
 #!/bin/bash
 
 ulimit -n 600000
@@ -268,20 +257,48 @@ ulimit -u 600000
 ulimit -i 1200000
 ulimit -s 1000000
 ulimit -l 200000
-~/ndppd/ndppd -d -c ~/ndppd/ndppd.conf
-sleep 2
+
+# Start 3proxy
 ~/3proxy/src/3proxy ~/3proxy/3proxy.cfg
+
 exit 0
+EOL
 
-END
-/bin/chmod +x /etc/rc.local
+chmod +x /etc/rc.local
 
-####
+echo ">-- Creating ndppd service"
+cat > /etc/systemd/system/ndppd.service <<EOL
+[Unit]
+Description=NDP Proxy Daemon
+After=network.target
+
+[Service]
+ExecStart=/usr/sbin/ndppd -d -c /root/ndppd/ndppd.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+echo ">-- Enabling services"
+systemctl daemon-reload
+systemctl enable ipv6-tunnel.service
+systemctl enable ndppd.service
+
+echo ">-- Starting services"
+systemctl start ipv6-tunnel.service
+systemctl start ndppd.service
+
 echo ">-- Verifying setup"
 
 # Check if services are running
-if ! pgrep ndppd >/dev/null; then
+if ! systemctl is-active --quiet ndppd; then
   echo "Error: ndppd is not running" >&2
+  exit 1
+fi
+
+if ! systemctl is-active --quiet ipv6-tunnel; then
+  echo "Error: IPv6 tunnel setup failed" >&2
   exit 1
 fi
 
@@ -290,11 +307,19 @@ if ! pgrep 3proxy >/dev/null; then
   exit 1
 fi
 
-# Check IPv6 connectivity
-if ! ping6 -c3 google.com &>/dev/null; then
-  echo "Error: IPv6 connectivity not working after setup" >&2
-  exit 1
-fi
+# Check IPv6 connectivity (wait for up to 30 seconds)
+for i in {1..6}; do
+  if ping6 -c3 google.com &>/dev/null; then
+    echo "IPv6 connectivity established"
+    break
+  elif [ $i -eq 6 ]; then
+    echo "Error: IPv6 connectivity not working after setup" >&2
+    exit 1
+  else
+    echo "Waiting for IPv6 connectivity..."
+    sleep 5
+  fi
+done
 
 # Check IPv6 tunnel
 if ! ip -6 addr show dev he-ipv6 >/dev/null 2>&1; then
