@@ -25,7 +25,7 @@ generate_ipv6_addresses() {
 
 # Function to create ifaceup.sh and ifacedown.sh
 create_iface_scripts() {
-    local dev="he-ipv6"
+    local dev="sbtb-ipv6"
     
     # Create ifaceup.sh
     echo "#!/bin/bash" > /app/proxy/ipv6-socks5-proxy/ifaceup.sh
@@ -49,10 +49,9 @@ configure_network() {
     local client_ipv4=$3
     
     cat << EOF | sudo tee -a /etc/network/interfaces
-auto he-ipv6
-iface he-ipv6 inet6 v4tunnel
+auto sbtb-ipv6
+iface sbtb-ipv6 inet6 v4tunnel
     address ${ipv6_prefix}::2
-    netmask 64
     endpoint $server_ipv4
     local $client_ipv4
     ttl 255
