@@ -62,9 +62,13 @@ up /app/proxy/ipv6-socks5-proxy/ifaceup.sh
 down /app/proxy/ipv6-socks5-proxy/ifacedown.sh
 EOF
 
+# Ensure /etc/3proxy directory exists and is writable
+sudo mkdir -p /etc/3proxy
+sudo chown $USER:$USER /etc/3proxy
+
 # Create 3proxy configuration
 echo "Creating 3proxy configuration..."
-cat << EOF > /etc/3proxy/3proxy.cfg
+cat << EOF | sudo tee /etc/3proxy/3proxy.cfg > /dev/null
 daemon
 maxconn 300
 nserver [2606:4700:4700::1111]
@@ -81,8 +85,16 @@ EOF
 
 current_port=$port_start
 while read -r ip; do
-    echo "proxy -6 -s0 -n -a -p$current_port -i$(hostname -I | awk '{print $1}') -e$ip" >> /etc/3proxy/3proxy.cfg
+    echo "proxy -6 -s0 -n -a -p$current_port -i$(hostname -I | awk '{print $1}') -e$ip" | sudo tee -a /etc/3proxy/3proxy.cfg > /dev/null
     ((current_port++))
 done < ip.list
 
 echo "Configuration complete. Please reboot your system to apply changes."
+
+# Optional: Restart 3proxy service if it's installed
+if systemctl is-active --quiet 3proxy; then
+    echo "Restarting 3proxy service..."
+    sudo systemctl restart 3proxy
+else
+    echo "3proxy service not found. Make sure 3proxy is installed and configured as a service."
+fi
