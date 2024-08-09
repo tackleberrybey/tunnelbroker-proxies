@@ -272,30 +272,59 @@ END
 /bin/chmod +x /etc/rc.local
 
 ####
+####
 echo ">-- Verifying setup"
 
-# Check if services are running
+# Start ndppd
+echo "Starting ndppd..."
+~/ndppd/ndppd -d -c ~/ndppd/ndppd.conf
+
+# Give ndppd a moment to start
+sleep 2
+
+# Check if ndppd is running
 if ! pgrep ndppd >/dev/null; then
-  echo "Error: ndppd is not running" >&2
+  echo "Error: ndppd failed to start. Checking logs..."
+  tail -n 20 /var/log/syslog
   exit 1
 fi
 
+# Start 3proxy
+echo "Starting 3proxy..."
+~/3proxy/src/3proxy ~/3proxy/3proxy.cfg
+
+# Give 3proxy a moment to start
+sleep 2
+
+# Check if 3proxy is running
 if ! pgrep 3proxy >/dev/null; then
-  echo "Error: 3proxy is not running" >&2
+  echo "Error: 3proxy failed to start. Checking logs..."
+  tail -n 20 /var/log/syslog
   exit 1
 fi
 
 # Check IPv6 connectivity
 if ! ping6 -c3 google.com &>/dev/null; then
-  echo "Error: IPv6 connectivity not working after setup" >&2
+  echo "Error: IPv6 connectivity not working after setup"
+  echo "Checking IPv6 configuration..."
+  ip -6 addr show
+  ip -6 route show
   exit 1
 fi
 
 # Check IPv6 tunnel
 if ! ip -6 addr show dev he-ipv6 >/dev/null 2>&1; then
-  echo "Error: IPv6 tunnel (he-ipv6) is not set up correctly" >&2
+  echo "Error: IPv6 tunnel (he-ipv6) is not set up correctly"
+  echo "Tunnel configuration:"
+  ip tunnel show he-ipv6
   exit 1
 fi
 
-echo "Setup completed successfully. Rebooting now..."
-reboot now
+echo "Setup completed successfully. IPv6 configuration:"
+ip -6 addr show
+ip -6 route show
+
+echo "Testing IPv6 connectivity:"
+ping6 -c 4 2001:4860:4860::8888
+
+echo "If everything looks good, you may want to reboot now to ensure all changes take effect."
