@@ -13,130 +13,151 @@ check_command() {
     fi
 }
 
-# Check if already configured (for idempotency)
-if grep -q "miredo" /etc/sysctl.conf; then
-  echo "IPv6 tunnel already configured."
+if ping6 -c3 google.com &>/dev/null; then
+  echo "Your server is ready to set up IPv6 proxies!"
 else
+  echo "Your server can't connect to IPv6 addresses."
+  echo "Please, connect ipv6 interface to your server to continue."
+  exit 1
+fi
 
-  echo "↓ Routed /48 or /64 IPv6 prefix from tunnelbroker (*:*:*::/*):"
-  read PROXY_NETWORK
+####
+echo "↓ Routed /48 or /64 IPv6 prefix from tunnelbroker (*:*:*::/*):"
+read PROXY_NETWORK
 
-  if [[ $PROXY_NETWORK == *"::/48"* ]]; then
-    PROXY_NET_MASK=48
-  elif [[ $PROXY_NETWORK == *"::/64"* ]]; then
-    PROXY_NET_MASK=64
-  else
-    echo "● Unsupported IPv6 prefix format: $PROXY_NETWORK"
+if [[ $PROXY_NETWORK == *"::/48"* ]]; then
+  PROXY_NET_MASK=48
+elif [[ $PROXY_NETWORK == *"::/64"* ]]; then
+  PROXY_NET_MASK=64
+else
+  echo "● Unsupported IPv6 prefix format: $PROXY_NETWORK"
+  exit 1
+fi
+
+####
+echo "↓ Server IPv4 address from tunnelbroker:"
+read TUNNEL_IPV4_ADDR
+if [[ ! "$TUNNEL_IPV4_ADDR" ]]; then
+  echo "● IPv4 address can't be empty"
+  exit 1
+fi
+
+####
+echo "↓ Proxies login (can be blank):"
+read PROXY_LOGIN
+
+if [[ "$PROXY_LOGIN" ]]; then
+  echo "↓ Proxies password:"
+  read PROXY_PASS
+  if [[ ! "$PROXY_PASS" ]]; then
+    echo "● Proxies pass can't be empty"
     exit 1
   fi
+fi
 
-  echo "↓ Server IPv4 address from tunnelbroker:"
-  read TUNNEL_IPV4_ADDR
-  if [[ ! "$TUNNEL_IPV4_ADDR" ]]; then
-    echo "● IPv4 address can't be empty"
+####
+echo "↓ Port numbering start (default 1500):"
+read PROXY_START_PORT
+if [[ ! "$PROXY_START_PORT" ]]; then
+  PROXY_START_PORT=1500
+fi
+
+####
+echo "↓ Proxies count (default 1):"
+read PROXY_COUNT
+if [[ ! "$PROXY_COUNT" ]]; then
+  PROXY_COUNT=1
+fi
+
+####
+echo "↓ Proxies protocol (http, socks5; default http):"
+read PROXY_PROTOCOL
+if [[ $PROXY_PROTOCOL != "socks5" ]]; then
+  PROXY_PROTOCOL="http"
+fi
+
+####
+clear
+sleep 1
+PROXY_NETWORK=$(echo $PROXY_NETWORK | awk -F:: '{print $1}')
+echo "● Network: $PROXY_NETWORK"
+echo "● Network Mask: $PROXY_NET_MASK"
+HOST_IPV4_ADDR=$(hostname -I | awk '{print $1}')
+echo "● Host IPv4 address: $HOST_IPV4_ADDR"
+echo "● Tunnel IPv4 address: $TUNNEL_IPV4_ADDR"
+echo "● Proxies count: $PROXY_COUNT, starting from port: $PROXY_START_PORT"
+echo "● Proxies protocol: $PROXY_PROTOCOL"
+if [[ "$PROXY_LOGIN" ]]; then
+  echo "● Proxies login: $PROXY_LOGIN"
+  echo "● Proxies password: $PROXY_PASS"
+fi
+
+####
+echo "-------------------------------------------------"
+echo ">-- Updating packages and installing dependencies"
+check_command apt-get update
+check_command apt-get -y install gcc g++ make bc pwgen git
+
+# Verify package installation
+for pkg in gcc g++ make bc pwgen git; do
+  if ! dpkg -s $pkg >/dev/null 2>&1; then
+    echo "Error: Failed to install $pkg" >&2
     exit 1
   fi
+done
 
-  echo "↓ Proxies login (can be blank):"
-  read PROXY_LOGIN
-
-  if [[ "$PROXY_LOGIN" ]]; then
-    echo "↓ Proxies password:"
-    read PROXY_PASS
-    if [[ ! "$PROXY_PASS" ]]; then
-      echo "● Proxies pass can't be empty"
-      exit 1
-    fi
-  fi
-
-  echo "↓ Port numbering start (default 1500):"
-  read PROXY_START_PORT
-  if [[ ! "$PROXY_START_PORT" ]]; then
-    PROXY_START_PORT=1500
-  fi
-
-  echo "↓ Proxies count (default 1):"
-  read PROXY_COUNT
-  if [[ ! "$PROXY_COUNT" ]]; then
-    PROXY_COUNT=1
-  fi
-
-  echo "↓ Proxies protocol (http, socks5; default http):"
-  read PROXY_PROTOCOL
-  if [[ $PROXY_PROTOCOL != "socks5" ]]; then
-    PROXY_PROTOCOL="http"
-  fi
-
-  clear
-  sleep 1
-  PROXY_NETWORK=$(echo $PROXY_NETWORK | awk -F:: '{print $1}')
-  echo "● Network: $PROXY_NETWORK"
-  echo "● Network Mask: $PROXY_NET_MASK"
-  HOST_IPV4_ADDR=$(hostname -I | awk '{print $1}')
-  echo "● Host IPv4 address: $HOST_IPV4_ADDR"
-  echo "● Tunnel IPv4 address: $TUNNEL_IPV4_ADDR"
-  echo "● Proxies count: $PROXY_COUNT, starting from port: $PROXY_START_PORT"
-  echo "● Proxies protocol: $PROXY_PROTOCOL"
-  if [[ "$PROXY_LOGIN" ]]; then
-    echo "● Proxies login: $PROXY_LOGIN"
-    echo "● Proxies password: $PROXY_PASS"
-  fi
-
-  echo "-------------------------------------------------"
-  echo ">-- Updating packages and installing dependencies"
-  check_command apt-get update
-  check_command apt-get -y install miredo iptables gcc g++ make bc pwgen git
-
-  # Verify package installation
-  for pkg in miredo iptables gcc g++ make bc pwgen git; do
-    if ! dpkg -s $pkg >/dev/null 2>&1; then
-      echo "Error: Failed to install $pkg" >&2
-      exit 1
-    fi
-  done
-
-  echo ">-- Configuring Miredo"
-  check_command systemctl stop miredo
-  check_command systemctl disable miredo
-
-  # Configure sysctl for IPv6 forwarding and other optimizations
-  cat >> /etc/sysctl.conf <<EOL
-net.ipv6.conf.all.forwarding=1
+####
+echo ">-- Setting up sysctl.conf"
+cat >>/etc/sysctl.conf <<END
+net.ipv6.conf.eth0.proxy_ndp=1
+net.ipv6.conf.all.proxy_ndp=1
 net.ipv6.conf.default.forwarding=1
+net.ipv6.conf.all.forwarding=1
 net.ipv6.ip_nonlocal_bind=1
 net.ipv4.ip_local_port_range=1024 64000
 net.ipv6.route.max_size=409600
 net.ipv4.tcp_max_syn_backlog=4096
 net.ipv6.neigh.default.gc_thresh3=102400
-kernel.threads-max = 1200000
-kernel.pid_max = 2000000
-EOL
+kernel.threads-max=1200000
+kernel.max_map_count=6000000
+vm.max_map_count=6000000
+kernel.pid_max=2000000
+END
 
-  check_command sysctl -p /etc/sysctl.conf
+####
+echo ">-- Setting up logind.conf"
+echo "UserTasksMax=1000000" >>/etc/systemd/logind.conf
 
-  # Set vm.max_map_count (this does not use sysctl)
-  echo "vm.max_map_count = 6000000" > /etc/sysctl.d/99-max-map-count.conf
-
-  echo ">-- Setting up logind.conf"
-  echo "UserTasksMax=1000000" >> /etc/systemd/logind.conf
-
-  echo ">-- Setting up system.conf"
-  cat >> /etc/systemd/system.conf <<EOL
+####
+echo ">-- Setting up system.conf"
+cat >>/etc/systemd/system.conf <<END
 UserTasksMax=1000000
 DefaultMemoryAccounting=no
 DefaultTasksAccounting=no
 DefaultTasksMax=1000000
 UserTasksMax=1000000
-EOL
+END
 
-  # Configure firewall rules (assuming you are using iptables)
-  echo ">-- Setting up iptables"
-  check_command iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-  check_command ip6tables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-  check_command netfilter-persistent save
+####
+echo ">-- Setting up ndppd"
+cd ~
+check_command git clone --quiet https://github.com/DanielAdolfsson/ndppd.git
+cd ~/ndppd
+check_command make -k all
+check_command make -k install
+cat >~/ndppd/ndppd.conf <<END
+route-ttl 30000
+proxy he-ipv6 {
+   router no
+   timeout 500
+   ttl 30000
+   rule ${PROXY_NETWORK}::/${PROXY_NET_MASK} {
+      static
+   }
+}
+END
 
-fi # End of the initial configuration block
-
+####
 echo ">-- Setting up 3proxy"
 cd ~
 check_command wget -q https://github.com/z3APA3A/3proxy/archive/0.8.13.tar.gz
@@ -175,6 +196,7 @@ auth none
 END
 fi
 
+####
 echo ">-- Generating IPv6 addresses"
 touch ~/ip.list
 touch ~/tunnels.txt
@@ -191,6 +213,7 @@ generate_proxy() {
   e=${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}
 
   echo "$PROXY_NETWORK:$a:$b:$c:$d$([ $PROXY_NET_MASK == 48 ] && echo ":$e" || echo "")" >>~/ip.list
+
 }
 
 while [ "$PROXY_GENERATING_INDEX" -le $PROXY_COUNT ]; do
@@ -205,38 +228,84 @@ for e in $(cat ~/ip.list); do
   let "CURRENT_PROXY_PORT+=1"
 done
 
-echo ">-- Updating rc.local"
-cat > /etc/rc.local <<EOL
-#!/bin/bash
+####
+echo ">-- Setting up IPv6 tunnel systemd service"
+cat >/etc/systemd/system/ipv6-tunnel.service <<END
+[Unit]
+Description=IPv6 Tunnel Setup
+After=network.target
 
-ulimit -n 600000
-ulimit -u 600000
-ulimit -i 1200000
-ulimit -s 1000000
-ulimit -l 200000
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '/sbin/ip tunnel add he-ipv6 mode sit remote ${TUNNEL_IPV4_ADDR} local ${HOST_IPV4_ADDR} ttl 255'
+ExecStart=/bin/bash -c '/sbin/ip link set he-ipv6 up'
+ExecStart=/bin/bash -c '/sbin/ip addr add ${PROXY_NETWORK}::2/64 dev he-ipv6'
+ExecStart=/bin/bash -c '/sbin/ip -6 route add default via ${PROXY_NETWORK}::1 dev he-ipv6'
+ExecStart=/bin/bash -c '/sbin/ip -6 route add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6'
+RemainAfterExit=yes
 
-# Start 3proxy
-~/3proxy/src/3proxy ~/3proxy/3proxy.cfg
+[Install]
+WantedBy=multi-user.target
+END
 
-exit 0
-EOL
+####
+echo ">-- Setting up ndppd systemd service"
+cat >/etc/systemd/system/ndppd.service <<END
+[Unit]
+Description=NDP Proxy Daemon
+After=network.target
 
-chmod +x /etc/rc.local
+[Service]
+ExecStart=/root/ndppd/ndppd -d -c /root/ndppd/ndppd.conf
+Restart=always
 
-echo ">-- Starting Miredo service"
-systemctl enable --now miredo
-systemctl start miredo
+[Install]
+WantedBy=multi-user.target
+END
 
-# Wait for Miredo to establish a tunnel
-echo "Waiting for Miredo to establish a tunnel (this may take a few minutes)..."
-timeout 120 bash -c 'until ping6 -c1 2001:4860:4860::8888 > /dev/null 2>&1; do sleep 1; done'
+####
+echo ">-- Setting up 3proxy systemd service"
+cat >/etc/systemd/system/3proxy.service <<END
+[Unit]
+Description=3proxy Proxy Server
+After=network.target
 
-if [[ $? -eq 124 ]]; then
-  echo "Error: Timeout while waiting for Miredo tunnel" >&2
+[Service]
+ExecStart=/root/3proxy/src/3proxy /root/3proxy/3proxy.cfg
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+END
+
+####
+echo ">-- Enabling and starting services"
+systemctl daemon-reload
+systemctl enable ipv6-tunnel.service
+systemctl enable ndppd.service
+systemctl enable 3proxy.service
+
+####
+echo ">-- Verifying setup"
+
+# Start services
+systemctl start ipv6-tunnel.service
+systemctl start ndppd.service
+systemctl start 3proxy.service
+
+# Wait for services to start
+sleep 10
+
+# Check if services are running
+if ! systemctl is-active --quiet ndppd; then
+  echo "Error: ndppd is not running" >&2
   exit 1
 fi
 
-echo ">-- Verifying setup"
+if ! systemctl is-active --quiet 3proxy; then
+  echo "Error: 3proxy is not running" >&2
+  exit 1
+fi
 
 # Check IPv6 connectivity
 if ! ping6 -c3 google.com &>/dev/null; then
@@ -244,4 +313,12 @@ if ! ping6 -c3 google.com &>/dev/null; then
   exit 1
 fi
 
-echo "Setup completed successfully. Your IPv6 proxies should be working now!"
+# Check IPv6 tunnel
+if ! ip -6 addr show dev he-ipv6 >/dev/null 2>&1; then
+  echo "Error: IPv6 tunnel (he-ipv6) is not set up correctly" >&2
+  exit 1
+fi
+
+echo "Setup completed successfully. IPv6 tunnel and proxies should now work and persist after reboots."
+echo "You may want to reboot the server to ensure everything is working correctly:"
+echo "sudo reboot"
