@@ -36,7 +36,7 @@ fi
 # Update and install dependencies
 echo "Updating and installing dependencies..."
 sudo apt update && sudo apt upgrade -y
-sudo apt-get install -y git mc make htop build-essential speedtest-cli curl wget ncdu tmux psmisc net-tools
+sudo apt-get install -y git mc make htop build-essential speedtest-cli curl wget ncdu tmux psmisc net-tools pdns-recursor
 check_command "Failed to install dependencies"
 
 # Create directory structure
@@ -118,17 +118,6 @@ DefaultLimitMEMLOCK=infinity
 EOF
 done
 
-# Add IPv6 DNS servers
-echo "Adding IPv6 DNS servers..."
-cat << EOF | sudo tee -a /etc/resolv.conf
-nameserver 2606:4700:4700::1111
-nameserver 2606:4700:4700::1001
-nameserver 2001:4860:4860::8888
-nameserver 2001:4860:4860::8844
-nameserver 2a02:6b8::feed:0ff
-nameserver 2a02:6b8:0:1::feed:0ff
-EOF
-
 # Install and configure 3proxy
 echo "Installing and configuring 3proxy..."
 cd /app/proxy/ipv6-socks5-proxy
@@ -151,10 +140,8 @@ sudo chmod 0600 /etc/3proxy/conf/counters /etc/3proxy/conf/bandlimiters
 cat << EOF | sudo tee /etc/3proxy/3proxy.cfg
 daemon
 maxconn 300
-nserver 2606:4700:4700::1111
-nserver 2606:4700:4700::1001
+nserver 127.0.0.1
 nscache 65536
-nscache6 65536
 timeouts 1 5 30 60 180 1800 15 60
 stacksize 6000
 flush
@@ -208,6 +195,9 @@ chmod +x /app/proxy/ipv6-socks5-proxy/genproxy.sh
 echo "Generating 3proxy configuration..."
 /app/proxy/ipv6-socks5-proxy/genproxy.sh
 
+# Configure admin user
+sudo /usr/local/3proxy/conf/add3proxyuser.sh admin password
+
 # Restart networking and 3proxy
 echo "Restarting networking and 3proxy..."
 sudo ip link set sbtb-ipv6 down
@@ -217,3 +207,4 @@ sudo systemctl start 3proxy
 
 echo "Setup completed. Please reboot your system to apply all changes."
 echo "After reboot, check the status of 3proxy with: systemctl status 3proxy"
+echo "Also, check the network interface with: ip addr show sbtb-ipv6"
