@@ -168,7 +168,7 @@ network:
       dhcp4: yes
   tunnels:
     he-ipv6:
-      interface-type: sit
+      type: sit # Corrected key
       local: ${HOST_IPV4_ADDR}
       remote: ${TUNNEL_IPV4_ADDR}
       addresses: [${PROXY_NETWORK}::2/64]
@@ -178,6 +178,9 @@ network:
         - to: default
           via: ${PROXY_NETWORK}::1
 END
+
+# Fix file permissions
+chmod 600 /etc/netplan/99-ipv6-tunnel.yaml
 
 check_command netplan apply
 
