@@ -108,11 +108,14 @@ net.ipv4.ip_local_port_range=1024 64000
 net.ipv6.route.max_size=409600
 net.ipv4.tcp_max_syn_backlog=4096
 net.ipv6.neigh.default.gc_thresh3=102400
-kernel.threads-max=1200000
-kernel.max_map_count=6000000
-vm.max_map_count=6000000
-kernel.pid_max=2000000
+kernel.threads-max = 1200000
+kernel.pid_max = 2000000
 EOL
+
+  # Try setting max_map_count if it exists
+  if [[ -f /proc/sys/kernel/max_map_count ]]; then
+    echo "vm.max_map_count = 6000000" >> /etc/sysctl.conf
+  fi
 
   check_command sysctl -p /etc/sysctl.conf
 
