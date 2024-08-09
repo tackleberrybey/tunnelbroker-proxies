@@ -8,6 +8,31 @@ check_command() {
     fi
 }
 
+# Prompt for necessary information
+read -p "Enter your IPv6 prefix (e.g., 2a09:04c0:aee0:023d::/64): " PROXY_NETWORK
+read -p "Enter the number of proxies to generate: " PROXY_COUNT
+read -p "Enter proxy username: " PROXY_USER
+read -s -p "Enter proxy password: " PROXY_PASS
+echo
+read -p "Enter the starting port number for proxies (default: 20000): " PROXY_START_PORT
+PROXY_START_PORT=${PROXY_START_PORT:-20000}
+
+# Validate inputs
+if [[ ! $PROXY_NETWORK =~ ^[0-9a-fA-F:]+/[0-9]+$ ]]; then
+    echo "Invalid IPv6 prefix format."
+    exit 1
+fi
+
+if ! [[ "$PROXY_COUNT" =~ ^[0-9]+$ ]] || [ "$PROXY_COUNT" -le 0 ]; then
+    echo "Invalid number of proxies."
+    exit 1
+fi
+
+if [ -z "$PROXY_USER" ] || [ -z "$PROXY_PASS" ]; then
+    echo "Username and password cannot be empty."
+    exit 1
+fi
+
 # Update and install dependencies
 echo "Updating and installing dependencies..."
 sudo apt update && sudo apt upgrade -y
@@ -22,9 +47,6 @@ cd /app/proxy/ipv6-socks5-proxy
 
 # Generate IPv6 addresses
 echo "Generating IPv6 addresses..."
-PROXY_NETWORK="2a09:04c0:aee0:023d::/64"
-PROXY_COUNT=500
-
 generate_ipv6() {
     printf "%s%04x:%04x:%04x:%04x\n" "$1" $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536))
 }
@@ -121,19 +143,19 @@ check_command "Failed to install 3proxy"
 
 # Create 3proxy configuration script
 echo "Creating 3proxy configuration script..."
-cat << 'EOF' > /app/proxy/ipv6-socks5-proxy/genproxy.sh
+cat << EOF > /app/proxy/ipv6-socks5-proxy/genproxy.sh
 #!/bin/bash
 
-ipv4=$(hostname -I | awk '{print $1}')
-portproxy=20000
-user=login
-pass=passw
+ipv4=\$(hostname -I | awk '{print \$1}')
+portproxy=$PROXY_START_PORT
+user=$PROXY_USER
+pass=$PROXY_PASS
 config="/etc/3proxy/3proxy.cfg"
 
-echo -ne > $config
+echo -ne > \$config
 echo -ne > /app/proxy/ipv6-socks5-proxy/proxylist.txt
 
-cat << EOC >> $config
+cat << EOC >> \$config
 daemon
 maxconn 300
 nserver 2606:4700:4700::1111
@@ -144,13 +166,13 @@ timeouts 1 5 30 60 180 1800 15 60
 stacksize 6000
 flush
 auth strong
-users $user:CL:$pass
-allow $user
+users \$user:CL:\$pass
+allow \$user
 EOC
 
-for i in $(cat /app/proxy/ipv6-socks5-proxy/ip.list); do
-    echo "proxy -6 -s0 -n -a -p$portproxy -i$ipv4 -e$i" >> $config
-    echo "http://$user:$pass@$ipv4:$portproxy" >> /app/proxy/ipv6-socks5-proxy/proxylist.txt
+for i in \$(cat /app/proxy/ipv6-socks5-proxy/ip.list); do
+    echo "proxy -6 -s0 -n -a -p\$portproxy -i\$ipv4 -e\$i" >> \$config
+    echo "http://\$user:\$pass@\$ipv4:\$portproxy" >> /app/proxy/ipv6-socks5-proxy/proxylist.txt
     ((portproxy++))
 done
 EOF
