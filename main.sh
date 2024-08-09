@@ -1,18 +1,5 @@
 #!/bin/bash
 
-# Set up logging
-exec > >(tee -a "/tmp/proxy_setup.log") 2>&1
-
-echo "Starting proxy setup script at $(date)"
-
-# Function to check command success
-check_command() {
-    if ! $@; then
-        echo "Error: Failed to execute command: $@" >&2
-        exit 1
-    fi
-}
-
 if ping6 -c3 google.com &>/dev/null; then
   echo "Your server is ready to set up IPv6 proxies!"
 else
@@ -38,7 +25,7 @@ fi
 echo "↓ Server IPv4 address from tunnelbroker:"
 read TUNNEL_IPV4_ADDR
 if [[ ! "$TUNNEL_IPV4_ADDR" ]]; then
-  echo "● IPv4 address can't be empty"
+  echo "● IPv4 address can't be emty"
   exit 1
 fi
 
@@ -49,8 +36,8 @@ read PROXY_LOGIN
 if [[ "$PROXY_LOGIN" ]]; then
   echo "↓ Proxies password:"
   read PROXY_PASS
-  if [[ ! "$PROXY_PASS" ]]; then
-    echo "● Proxies pass can't be empty"
+  if [[ ! "PROXY_PASS" ]]; then
+    echo "● Proxies pass can't be emty"
     exit 1
   fi
 fi
@@ -72,7 +59,7 @@ fi
 ####
 echo "↓ Proxies protocol (http, socks5; default http):"
 read PROXY_PROTOCOL
-if [[ $PROXY_PROTOCOL != "socks5" ]]; then
+if [[ PROXY_PROTOCOL != "socks5" ]]; then
   PROXY_PROTOCOL="http"
 fi
 
@@ -95,16 +82,8 @@ fi
 ####
 echo "-------------------------------------------------"
 echo ">-- Updating packages and installing dependencies"
-check_command apt-get update
-check_command apt-get -y install gcc g++ make bc pwgen git
-
-# Verify package installation
-for pkg in gcc g++ make bc pwgen git; do
-  if ! dpkg -s $pkg >/dev/null 2>&1; then
-    echo "Error: Failed to install $pkg" >&2
-    exit 1
-  fi
-done
+apt-get update >/dev/null 2>&1
+apt-get -y install gcc g++ make bc pwgen git >/dev/null 2>&1
 
 ####
 echo ">-- Setting up sysctl.conf"
@@ -141,10 +120,10 @@ END
 ####
 echo ">-- Setting up ndppd"
 cd ~
-check_command git clone --quiet https://github.com/DanielAdolfsson/ndppd.git
+git clone --quiet https://github.com/DanielAdolfsson/ndppd.git >/dev/null
 cd ~/ndppd
-check_command make -k all
-check_command make -k install
+make -k all >/dev/null 2>&1
+make -k install >/dev/null 2>&1
 cat >~/ndppd/ndppd.conf <<END
 route-ttl 30000
 proxy he-ipv6 {
@@ -160,8 +139,8 @@ END
 ####
 echo ">-- Setting up 3proxy"
 cd ~
-check_command wget -q https://github.com/z3APA3A/3proxy/archive/0.8.13.tar.gz
-check_command tar xzf 0.8.13.tar.gz
+wget -q https://github.com/z3APA3A/3proxy/archive/0.8.13.tar.gz
+tar xzf 0.8.13.tar.gz
 mv ~/3proxy-0.8.13 ~/3proxy
 rm 0.8.13.tar.gz
 cd ~/3proxy
@@ -169,7 +148,7 @@ chmod +x src/
 touch src/define.txt
 echo "#define ANONYMOUS 1" >src/define.txt
 sed -i '31r src/define.txt' src/proxy.h
-check_command make -f Makefile.Linux
+make -f Makefile.Linux >/dev/null 2>&1
 cat >~/3proxy/3proxy.cfg <<END
 #!/bin/bash
 
@@ -229,96 +208,30 @@ for e in $(cat ~/ip.list); do
 done
 
 ####
-echo ">-- Setting up IPv6 tunnel systemd service"
-cat >/etc/systemd/system/ipv6-tunnel.service <<END
-[Unit]
-Description=IPv6 Tunnel Setup
-After=network.target
+echo ">-- Setting up rc.local"
+cat >/etc/rc.local <<END
+#!/bin/bash
 
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -c '/sbin/ip tunnel add he-ipv6 mode sit remote ${TUNNEL_IPV4_ADDR} local ${HOST_IPV4_ADDR} ttl 255'
-ExecStart=/bin/bash -c '/sbin/ip link set he-ipv6 up'
-ExecStart=/bin/bash -c '/sbin/ip addr add ${PROXY_NETWORK}::2/64 dev he-ipv6'
-ExecStart=/bin/bash -c '/sbin/ip -6 route add default via ${PROXY_NETWORK}::1 dev he-ipv6'
-ExecStart=/bin/bash -c '/sbin/ip -6 route add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6'
-RemainAfterExit=yes
+ulimit -n 10000
+ulimit -u 10000
+ulimit -i 1200000
+ulimit -s 1000000
+ulimit -l 200000
+/sbin/ip addr add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6
+sleep 5
+/sbin/ip -6 route add default via ${PROXY_NETWORK}::1
+/sbin/ip -6 route add local ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev lo
+/sbin/ip tunnel add he-ipv6 mode sit remote ${TUNNEL_IPV4_ADDR} local ${HOST_IPV4_ADDR} ttl 255
+/sbin/ip link set he-ipv6 up
+/sbin/ip -6 route add 2000::/3 dev he-ipv6
+~/ndppd/ndppd -d -c ~/ndppd/ndppd.conf
+sleep 2
+~/3proxy/src/3proxy ~/3proxy/3proxy.cfg
+exit 0
 
-[Install]
-WantedBy=multi-user.target
 END
+/bin/chmod +x /etc/rc.local
 
 ####
-echo ">-- Setting up ndppd systemd service"
-cat >/etc/systemd/system/ndppd.service <<END
-[Unit]
-Description=NDP Proxy Daemon
-After=network.target
-
-[Service]
-ExecStart=/root/ndppd/ndppd -d -c /root/ndppd/ndppd.conf
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-END
-
-####
-echo ">-- Setting up 3proxy systemd service"
-cat >/etc/systemd/system/3proxy.service <<END
-[Unit]
-Description=3proxy Proxy Server
-After=network.target
-
-[Service]
-ExecStart=/root/3proxy/src/3proxy /root/3proxy/3proxy.cfg
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-END
-
-####
-echo ">-- Enabling and starting services"
-systemctl daemon-reload
-systemctl enable ipv6-tunnel.service
-systemctl enable ndppd.service
-systemctl enable 3proxy.service
-
-####
-echo ">-- Verifying setup"
-
-# Start services
-systemctl start ipv6-tunnel.service
-systemctl start ndppd.service
-systemctl start 3proxy.service
-
-# Wait for services to start
-sleep 10
-
-# Check if services are running
-if ! systemctl is-active --quiet ndppd; then
-  echo "Error: ndppd is not running" >&2
-  exit 1
-fi
-
-if ! systemctl is-active --quiet 3proxy; then
-  echo "Error: 3proxy is not running" >&2
-  exit 1
-fi
-
-# Check IPv6 connectivity
-if ! ping6 -c3 google.com &>/dev/null; then
-  echo "Error: IPv6 connectivity not working after setup" >&2
-  exit 1
-fi
-
-# Check IPv6 tunnel
-if ! ip -6 addr show dev he-ipv6 >/dev/null 2>&1; then
-  echo "Error: IPv6 tunnel (he-ipv6) is not set up correctly" >&2
-  exit 1
-fi
-
-echo "Setup completed successfully. IPv6 tunnel and proxies should now work and persist after reboots."
-echo "You may want to reboot the server to ensure everything is working correctly:"
-echo "sudo reboot"
+echo "Finishing and rebooting"
+reboot now
