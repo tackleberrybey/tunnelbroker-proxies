@@ -142,6 +142,11 @@ check_command ip link set he-ipv6 up
 check_command ip addr add $CLIENT_IPV6_ADDR dev he-ipv6
 check_command ip -6 route add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6
 SERVER_IPV6_ADDR_NO_MASK=$(echo $SERVER_IPV6_ADDR | cut -d'/' -f1)
+
+# Remove existing default route if it exists
+ip -6 route del default 2>/dev/null || true
+
+# Add new default route
 check_command ip -6 route add default via $SERVER_IPV6_ADDR_NO_MASK dev he-ipv6
 
 # Remove any conflicting routes
@@ -256,6 +261,7 @@ ulimit -l 200000
 /sbin/ip link set he-ipv6 up
 /sbin/ip addr add $CLIENT_IPV6_ADDR dev he-ipv6
 /sbin/ip -6 route add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6
+/sbin/ip -6 route del default 2>/dev/null || true
 /sbin/ip -6 route add default via ${SERVER_IPV6_ADDR%/*} dev he-ipv6
 ~/ndppd/ndppd -d -c ~/ndppd/ndppd.conf
 sleep 2
