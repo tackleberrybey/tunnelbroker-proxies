@@ -13,21 +13,32 @@ check_command() {
     fi
 }
 
-# Prompt for necessary information
-echo "↓ Routed /64 IPv6 prefix from tunnelbroker (format: xxxx:xxxx:xxxx:xxxx):"
-read PROXY_NETWORK
-
-# Validate and format IPv6 prefix
-if [[ ! $PROXY_NETWORK =~ ^[0-9a-fA-F:]+$ ]] || [[ $(echo $PROXY_NETWORK | tr -cd ':' | wc -c) -ne 3 ]]; then
-    echo "Invalid IPv6 prefix format. Please use the format xxxx:xxxx:xxxx:xxxx"
-    exit 1
+if ping6 -c3 google.com &>/dev/null; then
+  echo "Your server is ready to set up IPv6 proxies!"
+else
+  echo "Your server can't connect to IPv6 addresses."
+  echo "Please, connect ipv6 interface to your server to continue."
+  exit 1
 fi
 
-# Remove any trailing colons and add :: to the end
-PROXY_NETWORK=$(echo $PROXY_NETWORK | sed 's/:*$/::/g')
+echo "↓ Routed /48 or /64 IPv6 prefix from tunnelbroker (*:*:*::/*):"
+read PROXY_NETWORK
+
+if [[ $PROXY_NETWORK == *"::/48"* ]]; then
+  PROXY_NET_MASK=48
+elif [[ $PROXY_NETWORK == *"::/64"* ]]; then
+  PROXY_NET_MASK=64
+else
+  echo "● Unsupported IPv6 prefix format: $PROXY_NETWORK"
+  exit 1
+fi
 
 echo "↓ Server IPv4 address from tunnelbroker:"
 read TUNNEL_IPV4_ADDR
+if [[ ! "$TUNNEL_IPV4_ADDR" ]]; then
+  echo "● IPv4 address can't be empty"
+  exit 1
+fi
 
 echo "↓ Proxies login (can be blank):"
 read PROXY_LOGIN
@@ -35,108 +46,174 @@ read PROXY_LOGIN
 if [[ "$PROXY_LOGIN" ]]; then
   echo "↓ Proxies password:"
   read PROXY_PASS
+  if [[ ! "$PROXY_PASS" ]]; then
+    echo "● Proxies pass can't be empty"
+    exit 1
+  fi
 fi
 
 echo "↓ Port numbering start (default 1500):"
 read PROXY_START_PORT
-PROXY_START_PORT=${PROXY_START_PORT:-1500}
+if [[ ! "$PROXY_START_PORT" ]]; then
+  PROXY_START_PORT=1500
+fi
 
 echo "↓ Proxies count (default 1):"
 read PROXY_COUNT
-PROXY_COUNT=${PROXY_COUNT:-1}
+if [[ ! "$PROXY_COUNT" ]]; then
+  PROXY_COUNT=1
+fi
 
 echo "↓ Proxies protocol (http, socks5; default http):"
 read PROXY_PROTOCOL
-PROXY_PROTOCOL=${PROXY_PROTOCOL:-http}
+if [[ $PROXY_PROTOCOL != "socks5" ]]; then
+  PROXY_PROTOCOL="http"
+fi
 
-# Install necessary packages
-echo "Installing necessary packages..."
-check_command apt-get update
-check_command apt-get install -y iptables-persistent build-essential wget
-
-# Compile and install 3proxy
-echo "Compiling and installing 3proxy..."
-cd /tmp
-check_command wget https://github.com/z3APA3A/3proxy/archive/0.9.3.tar.gz
-check_command tar xzf 0.9.3.tar.gz
-cd 3proxy-0.9.3
-check_command make -f Makefile.Linux
-check_command make -f Makefile.Linux install
-cd ..
-rm -rf 3proxy-0.9.3 0.9.3.tar.gz
-
-# Set up IPv6 tunnel
-echo "Setting up IPv6 tunnel..."
+clear
+sleep 1
+PROXY_NETWORK=$(echo $PROXY_NETWORK | awk -F:: '{print $1}')
+echo "● Network: $PROXY_NETWORK"
+echo "● Network Mask: $PROXY_NET_MASK"
 HOST_IPV4_ADDR=$(hostname -I | awk '{print $1}')
-PROXY_NETWORK_PREFIX=${PROXY_NETWORK%::}
+echo "● Host IPv4 address: $HOST_IPV4_ADDR"
+echo "● Tunnel IPv4 address: $TUNNEL_IPV4_ADDR"
+echo "● Proxies count: $PROXY_COUNT, starting from port: $PROXY_START_PORT"
+echo "● Proxies protocol: $PROXY_PROTOCOL"
+if [[ "$PROXY_LOGIN" ]]; then
+  echo "● Proxies login: $PROXY_LOGIN"
+  echo "● Proxies password: $PROXY_PASS"
+fi
 
-check_command ip tunnel add he-ipv6 mode sit remote $TUNNEL_IPV4_ADDR local $HOST_IPV4_ADDR ttl 255
-check_command ip link set he-ipv6 up
-check_command ip addr add ${PROXY_NETWORK_PREFIX}2/64 dev he-ipv6
-check_command ip -6 route add default via ${PROXY_NETWORK_PREFIX}1 dev he-ipv6
+echo "-------------------------------------------------"
+echo ">-- Updating packages and installing dependencies"
+check_command apt-get update
+check_command apt-get -y install gcc g++ make bc pwgen git
 
-# Enable IPv6 forwarding
-echo "Enabling IPv6 forwarding..."
-echo "net.ipv6.conf.all.forwarding=1" > /etc/sysctl.d/60-ipv6-forward.conf
-check_command sysctl -p /etc/sysctl.d/60-ipv6-forward.conf
+# Verify package installation
+for pkg in gcc g++ make bc pwgen git; do
+  if ! dpkg -s $pkg >/dev/null 2>&1; then
+    echo "Error: Failed to install $pkg" >&2
+    exit 1
+  fi
+done
 
-# Set up iptables rules
-echo "Setting up iptables rules..."
-check_command ip6tables -t nat -A POSTROUTING -o he-ipv6 -j MASQUERADE
-check_command ip6tables-save > /etc/iptables/rules.v6
+echo ">-- Setting up sysctl.conf"
+cat >>/etc/sysctl.conf <<END
+net.ipv6.conf.eth0.proxy_ndp=1
+net.ipv6.conf.all.proxy_ndp=1
+net.ipv6.conf.default.forwarding=1
+net.ipv6.conf.all.forwarding=1
+net.ipv6.ip_nonlocal_bind=1
+net.ipv4.ip_local_port_range=1024 64000
+net.ipv6.route.max_size=409600
+net.ipv4.tcp_max_syn_backlog=4096
+net.ipv6.neigh.default.gc_thresh3=102400
+kernel.threads-max=1200000
+kernel.max_map_count=6000000
+vm.max_map_count=6000000
+kernel.pid_max=2000000
+END
 
-# Create 3proxy configuration
-echo "Creating 3proxy configuration..."
-mkdir -p /etc/3proxy
-cat > /etc/3proxy/3proxy.cfg <<EOL
+echo ">-- Setting up logind.conf"
+echo "UserTasksMax=1000000" >>/etc/systemd/logind.conf
+
+echo ">-- Setting up system.conf"
+cat >>/etc/systemd/system.conf <<END
+UserTasksMax=1000000
+DefaultMemoryAccounting=no
+DefaultTasksAccounting=no
+DefaultTasksMax=1000000
+UserTasksMax=1000000
+END
+
+echo ">-- Setting up ndppd"
+cd ~
+check_command git clone --quiet https://github.com/DanielAdolfsson/ndppd.git
+cd ~/ndppd
+check_command make -k all
+check_command make -k install
+cat >~/ndppd/ndppd.conf <<END
+route-ttl 30000
+proxy he-ipv6 {
+   router no
+   timeout 500
+   ttl 30000
+   rule ${PROXY_NETWORK}::/${PROXY_NET_MASK} {
+      static
+   }
+}
+END
+
+echo ">-- Setting up 3proxy"
+cd ~
+check_command wget -q https://github.com/z3APA3A/3proxy/archive/0.8.13.tar.gz
+check_command tar xzf 0.8.13.tar.gz
+mv ~/3proxy-0.8.13 ~/3proxy
+rm 0.8.13.tar.gz
+cd ~/3proxy
+chmod +x src/
+touch src/define.txt
+echo "#define ANONYMOUS 1" >src/define.txt
+sed -i '31r src/define.txt' src/proxy.h
+check_command make -f Makefile.Linux
+cat >~/3proxy/3proxy.cfg <<END
+#!/bin/bash
+
 daemon
-maxconn 1000
+maxconn 100
 nserver 1.1.1.1
-nserver 8.8.8.8
 nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
 setgid 65535
 setuid 65535
-stacksize 6291456
+stacksize 6000
 flush
-EOL
+END
 
 if [[ "$PROXY_LOGIN" ]]; then
-    echo "auth strong" >> /etc/3proxy/3proxy.cfg
-    echo "users $PROXY_LOGIN:CL:$PROXY_PASS" >> /etc/3proxy/3proxy.cfg
-    echo "allow $PROXY_LOGIN" >> /etc/3proxy/3proxy.cfg
+  cat >>~/3proxy/3proxy.cfg <<END
+auth strong
+users ${PROXY_LOGIN}:CL:${PROXY_PASS}
+allow ${PROXY_LOGIN}
+END
 else
-    echo "auth none" >> /etc/3proxy/3proxy.cfg
+  cat >>~/3proxy/3proxy.cfg <<END
+auth none
+END
 fi
 
-for ((i=0; i<$PROXY_COUNT; i++)); do
-    PORT=$((PROXY_START_PORT + i))
-    echo "$PROXY_PROTOCOL -6 -n -a -p$PORT -i${PROXY_NETWORK_PREFIX}2 -e${PROXY_NETWORK_PREFIX}$((i+3))" >> /etc/3proxy/3proxy.cfg
+echo ">-- Generating IPv6 addresses"
+touch ~/ip.list
+touch ~/tunnels.txt
+
+P_VALUES=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
+PROXY_GENERATING_INDEX=1
+GENERATED_PROXY=""
+
+generate_proxy() {
+  a=${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}
+  b=${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}
+  c=${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}
+  d=${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}
+  e=${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}${P_VALUES[$RANDOM % 16]}
+
+  echo "$PROXY_NETWORK:$a:$b:$c:$d$([ $PROXY_NET_MASK == 48 ] && echo ":$e" || echo "")" >>~/ip.list
+}
+
+while [ "$PROXY_GENERATING_INDEX" -le $PROXY_COUNT ]; do
+  generate_proxy
+  let "PROXY_GENERATING_INDEX+=1"
 done
 
-# Create systemd service for 3proxy
-echo "Creating systemd service for 3proxy..."
-cat > /etc/systemd/system/3proxy.service <<EOL
-[Unit]
-Description=3proxy Proxy Server
-After=network.target
+CURRENT_PROXY_PORT=${PROXY_START_PORT}
+for e in $(cat ~/ip.list); do
+  echo "$([ $PROXY_PROTOCOL == "socks5" ] && echo "socks" || echo "proxy") -6 -s0 -n -a -p$CURRENT_PROXY_PORT -i$HOST_IPV4_ADDR -e$e" >>~/3proxy/3proxy.cfg
+  echo "$PROXY_PROTOCOL://$([ "$PROXY_LOGIN" ] && echo "$PROXY_LOGIN:$PROXY_PASS@" || echo "")$HOST_IPV4_ADDR:$CURRENT_PROXY_PORT" >>~/tunnels.txt
+  let "CURRENT_PROXY_PORT+=1"
+done
 
-[Service]
-ExecStart=/usr/local/bin/3proxy /etc/3proxy/3proxy.cfg
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOL
-
-# Enable and start the service
-echo "Enabling and starting 3proxy service..."
-check_command systemctl daemon-reload
-check_command systemctl enable 3proxy
-check_command systemctl start 3proxy
-
-# Set up persistent tunnel
-echo "Setting up persistent tunnel..."
+echo ">-- Creating IPv6 tunnel setup service"
 cat > /etc/systemd/system/ipv6-tunnel.service <<EOL
 [Unit]
 Description=IPv6 Tunnel Setup
@@ -151,26 +228,104 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOL
 
+echo ">-- Creating IPv6 tunnel setup script"
 cat > /usr/local/bin/setup-ipv6-tunnel.sh <<EOL
 #!/bin/bash
-ip tunnel add he-ipv6 mode sit remote $TUNNEL_IPV4_ADDR local $HOST_IPV4_ADDR ttl 255
-ip link set he-ipv6 up
-ip addr add ${PROXY_NETWORK_PREFIX}2/64 dev he-ipv6
-ip -6 route add default via ${PROXY_NETWORK_PREFIX}1 dev he-ipv6
+
+# IPv6 Tunnel Setup
+/sbin/ip tunnel add he-ipv6 mode sit remote ${TUNNEL_IPV4_ADDR} local ${HOST_IPV4_ADDR} ttl 255
+/sbin/ip link set he-ipv6 up
+/sbin/ip addr add ${PROXY_NETWORK}::2/64 dev he-ipv6
+/sbin/ip -6 route add default via ${PROXY_NETWORK}::1 dev he-ipv6
+/sbin/ip -6 route add ${PROXY_NETWORK}::/64 dev he-ipv6
+
+# Enable IPv6 forwarding
+sysctl -w net.ipv6.conf.all.forwarding=1
+
+# Start ndppd
+systemctl start ndppd
 EOL
 
 chmod +x /usr/local/bin/setup-ipv6-tunnel.sh
 
-check_command systemctl enable ipv6-tunnel.service
-check_command systemctl start ipv6-tunnel.service
+echo ">-- Updating rc.local"
+cat > /etc/rc.local <<EOL
+#!/bin/bash
 
-echo "Setup completed successfully. Your IPv6 proxies should now be running."
-echo "Proxy addresses:"
-for ((i=0; i<$PROXY_COUNT; i++)); do
-    PORT=$((PROXY_START_PORT + i))
-    echo "[${PROXY_NETWORK_PREFIX}$((i+3))]:$PORT"
+ulimit -n 600000
+ulimit -u 600000
+ulimit -i 1200000
+ulimit -s 1000000
+ulimit -l 200000
+
+# Start 3proxy
+~/3proxy/src/3proxy ~/3proxy/3proxy.cfg
+
+exit 0
+EOL
+
+chmod +x /etc/rc.local
+
+echo ">-- Creating ndppd service"
+cat > /etc/systemd/system/ndppd.service <<EOL
+[Unit]
+Description=NDP Proxy Daemon
+After=network.target
+
+[Service]
+ExecStart=/usr/sbin/ndppd -d -c /root/ndppd/ndppd.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+echo ">-- Enabling services"
+systemctl daemon-reload
+systemctl enable ipv6-tunnel.service
+systemctl enable ndppd.service
+
+echo ">-- Starting services"
+systemctl start ipv6-tunnel.service
+systemctl start ndppd.service
+
+echo ">-- Verifying setup"
+
+# Check if services are running
+if ! systemctl is-active --quiet ndppd; then
+  echo "Error: ndppd is not running" >&2
+  exit 1
+fi
+
+if ! systemctl is-active --quiet ipv6-tunnel; then
+  echo "Error: IPv6 tunnel setup failed" >&2
+  exit 1
+fi
+
+if ! pgrep 3proxy >/dev/null; then
+  echo "Error: 3proxy is not running" >&2
+  exit 1
+fi
+
+# Check IPv6 connectivity (wait for up to 30 seconds)
+for i in {1..6}; do
+  if ping6 -c3 google.com &>/dev/null; then
+    echo "IPv6 connectivity established"
+    break
+  elif [ $i -eq 6 ]; then
+    echo "Error: IPv6 connectivity not working after setup" >&2
+    exit 1
+  else
+    echo "Waiting for IPv6 connectivity..."
+    sleep 5
+  fi
 done
 
-echo "To start 3proxy: systemctl start 3proxy"
-echo "To stop 3proxy: systemctl stop 3proxy"
-echo "To check 3proxy status: systemctl status 3proxy"
+# Check IPv6 tunnel
+if ! ip -6 addr show dev he-ipv6 >/dev/null 2>&1; then
+  echo "Error: IPv6 tunnel (he-ipv6) is not set up correctly" >&2
+  exit 1
+fi
+
+echo "Setup completed successfully. Rebooting now..."
+reboot now
