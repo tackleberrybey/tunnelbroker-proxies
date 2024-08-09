@@ -147,12 +147,39 @@ sudo chmod -R a-w /usr/local/3proxy/libexec
 sudo touch /etc/3proxy/conf/counters /etc/3proxy/conf/bandlimiters
 sudo chmod 0600 /etc/3proxy/conf/counters /etc/3proxy/conf/bandlimiters
 
-# Install configuration files
-sudo cp scripts/3proxy.cfg.sample /etc/3proxy/3proxy.cfg
-sudo cp scripts/add3proxyuser.sh /etc/3proxy/conf/
+# Create a basic 3proxy configuration file
+cat << EOF | sudo tee /etc/3proxy/3proxy.cfg
+daemon
+maxconn 300
+nserver 2606:4700:4700::1111
+nserver 2606:4700:4700::1001
+nscache 65536
+nscache6 65536
+timeouts 1 5 30 60 180 1800 15 60
+stacksize 6000
+flush
+auth strong
+users $PROXY_USER:CL:$PROXY_PASS
+allow $PROXY_USER
+EOF
 
 # Install systemd service file
-sudo cp scripts/3proxy.service /etc/systemd/system/
+cat << EOF | sudo tee /etc/systemd/system/3proxy.service
+[Unit]
+Description=3proxy tiny proxy server
+Documentation=man:3proxy(1)
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/3proxy /etc/3proxy/3proxy.cfg
+ExecReload=/bin/kill -SIGUSR1 $MAINPID
+KillMode=process
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
 
 # Create 3proxy configuration script
@@ -166,24 +193,7 @@ user=$PROXY_USER
 pass=$PROXY_PASS
 config="/etc/3proxy/3proxy.cfg"
 
-echo -ne > \$config
 echo -ne > /app/proxy/ipv6-socks5-proxy/proxylist.txt
-
-cat << EOC >> \$config
-daemon
-maxconn 300
-nserver 2606:4700:4700::1111
-nserver 2606:4700:4700::1001
-nscache 65536
-nscache6 65536
-timeouts 1 5 30 60 180 1800 15 60
-stacksize 6000
-flush
-auth strong
-users \$user:CL:\$pass
-allow \$user
-
-EOC
 
 for i in \$(cat /app/proxy/ipv6-socks5-proxy/ip.list); do
     echo "proxy -6 -s0 -n -a -p\$portproxy -i\$ipv4 -e\$i" >> \$config
@@ -200,7 +210,8 @@ echo "Generating 3proxy configuration..."
 
 # Restart networking and 3proxy
 echo "Restarting networking and 3proxy..."
-sudo systemctl restart networking || echo "Networking restart failed, please check manually after reboot"
+sudo ip link set sbtb-ipv6 down
+sudo ip link set sbtb-ipv6 up
 sudo systemctl enable 3proxy
 sudo systemctl start 3proxy
 
