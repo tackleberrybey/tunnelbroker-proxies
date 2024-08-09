@@ -118,12 +118,32 @@ UserTasksMax=1000000
 END
 
 ####
+####
 echo ">-- Setting up ndppd"
 cd ~
-git clone --quiet https://github.com/DanielAdolfsson/ndppd.git >/dev/null
+git clone --quiet https://github.com/DanielAdolfsson/ndppd.git >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to clone ndppd repository"
+    exit 1
+fi
+
 cd ~/ndppd
-make -k all >/dev/null 2>&1
-make -k install >/dev/null 2>&1
+make -k all >/tmp/ndppd_make.log 2>&1
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to build ndppd"
+    echo "Build log:"
+    cat /tmp/ndppd_make.log
+    exit 1
+fi
+
+make -k install >/tmp/ndppd_install.log 2>&1
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to install ndppd"
+    echo "Install log:"
+    cat /tmp/ndppd_install.log
+    exit 1
+fi
+
 cat >~/ndppd/ndppd.conf <<END
 route-ttl 30000
 proxy he-ipv6 {
@@ -135,6 +155,31 @@ proxy he-ipv6 {
    }
 }
 END
+
+# Create systemd service file for ndppd
+cat > /etc/systemd/system/ndppd.service <<END
+[Unit]
+Description=NDP Proxy Daemon
+After=network.target
+
+[Service]
+ExecStart=/usr/local/sbin/ndppd -d -c /root/ndppd/ndppd.conf
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+END
+
+# Reload systemd and enable ndppd service
+systemctl daemon-reload
+systemctl enable ndppd
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to enable ndppd service"
+    exit 1
+fi
+
+echo "ndppd setup completed successfully"
 
 ####
 echo ">-- Setting up 3proxy"
