@@ -273,12 +273,16 @@ Description=NDP Proxy Daemon
 After=network.target
 
 [Service]
-ExecStart=/usr/sbin/ndppd -d -c /root/ndppd/ndppd.conf
+ExecStart=/root/ndppd/ndppd -d -c /root/ndppd/ndppd.conf
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOL
+
+# RELOAD systemd RIGHT HERE
+systemctl daemon-reload
+
 
 echo ">-- Enabling services"
 systemctl daemon-reload
