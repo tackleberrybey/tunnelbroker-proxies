@@ -43,7 +43,18 @@ PROXY_PROTOCOL=${PROXY_PROTOCOL:-http}
 # Install necessary packages
 echo "Installing necessary packages..."
 check_command apt-get update
-check_command apt-get install -y python3-pip iptables-persistent
+check_command apt-get install -y iptables-persistent build-essential wget
+
+# Compile and install 3proxy
+echo "Compiling and installing 3proxy..."
+cd /tmp
+check_command wget https://github.com/z3APA3A/3proxy/archive/0.9.3.tar.gz
+check_command tar xzf 0.9.3.tar.gz
+cd 3proxy-0.9.3
+check_command make -f Makefile.Linux
+check_command make -f Makefile.Linux install
+cd ..
+rm -rf 3proxy-0.9.3 0.9.3.tar.gz
 
 # Set up IPv6 tunnel
 echo "Setting up IPv6 tunnel..."
@@ -63,79 +74,36 @@ echo "Setting up iptables rules..."
 check_command ip6tables -t nat -A POSTROUTING -o he-ipv6 -j MASQUERADE
 check_command ip6tables-save > /etc/iptables/rules.v6
 
-# Create Python proxy script
-echo "Creating Python proxy script..."
-cat > /usr/local/bin/simple_proxy.py <<EOL
-import sys
-import socket
-import threading
-import select
-
-def forward(source, destination):
-    string = ' '
-    while string:
-        string = source.recv(1024)
-        if string:
-            destination.sendall(string)
-        else:
-            source.shutdown(socket.SHUT_RD)
-            destination.shutdown(socket.SHUT_WR)
-
-def handle(client, addr):
-    try:
-        request = client.recv(1024)
-        if not request:
-            client.close()
-            return
-        
-        if request.startswith(b'CONNECT'):
-            host, port = request.split(b' ')[1].split(b':')
-        else:
-            host = request.split(b'\n')[1].split(b' ')[1]
-            port = 80 if host.startswith(b'http://') else 443
-
-        server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        server.connect((host.decode(), int(port)))
-        
-        if request.startswith(b'CONNECT'):
-            client.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n')
-        else:
-            server.sendall(request)
-
-        threading.Thread(target=forward, args=(client, server)).start()
-        threading.Thread(target=forward, args=(server, client)).start()
-    except Exception as e:
-        print(f"Error: {e}")
-        client.close()
-        try:
-            server.close()
-        except:
-            pass
-
-def main(port, ipv6_prefix):
-    server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((f"{ipv6_prefix}::2", port))
-    server.listen(100)
-    print(f"Proxy listening on [{ipv6_prefix}::2]:{port}")
-
-    while True:
-        client, addr = server.accept()
-        threading.Thread(target=handle, args=(client, addr)).start()
-
-if __name__ == "__main__":
-    main(int(sys.argv[1]), sys.argv[2])
+# Create 3proxy configuration
+echo "Creating 3proxy configuration..."
+cat > /etc/3proxy/3proxy.cfg <<EOL
+daemon
+maxconn 1000
+nserver 1.1.1.1
+nserver 8.8.8.8
+nscache 65536
+timeouts 1 5 30 60 180 1800 15 60
+setgid 65535
+setuid 65535
+stacksize 6291456
+flush
+auth none
 EOL
 
-# Create systemd service for the proxy
-echo "Creating systemd service for the proxy..."
-cat > /etc/systemd/system/ipv6proxy.service <<EOL
+for ((i=0; i<$PROXY_COUNT; i++)); do
+    PORT=$((PROXY_START_PORT + i))
+    echo "$PROXY_PROTOCOL -6 -n -a -p$PORT -i${PROXY_NETWORK}::2 -e${PROXY_NETWORK}::$((i+3))" >> /etc/3proxy/3proxy.cfg
+done
+
+# Create systemd service for 3proxy
+echo "Creating systemd service for 3proxy..."
+cat > /etc/systemd/system/3proxy.service <<EOL
 [Unit]
-Description=IPv6 Proxy Service
+Description=3proxy Proxy Server
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /usr/local/bin/simple_proxy.py ${PROXY_START_PORT} ${PROXY_NETWORK}
+ExecStart=/usr/local/bin/3proxy /etc/3proxy/3proxy.cfg
 Restart=always
 
 [Install]
@@ -143,10 +111,14 @@ WantedBy=multi-user.target
 EOL
 
 # Enable and start the service
-echo "Enabling and starting the proxy service..."
+echo "Enabling and starting 3proxy service..."
 check_command systemctl daemon-reload
-check_command systemctl enable ipv6proxy
-check_command systemctl start ipv6proxy
+check_command systemctl enable 3proxy
+check_command systemctl start 3proxy
 
-echo "Setup completed successfully. Your IPv6 proxy should now be running."
-echo "Proxy address: [${PROXY_NETWORK}::2]:${PROXY_START_PORT}"
+echo "Setup completed successfully. Your IPv6 proxies should now be running."
+echo "Proxy addresses:"
+for ((i=0; i<$PROXY_COUNT; i++)); do
+    PORT=$((PROXY_START_PORT + i))
+    echo "[${PROXY_NETWORK}::$((i+3))]:$PORT"
+done
