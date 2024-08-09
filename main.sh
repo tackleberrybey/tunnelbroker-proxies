@@ -43,22 +43,6 @@ if [[ ! "$TUNNEL_IPV4_ADDR" ]]; then
 fi
 
 ####
-echo "↓ Client IPv6 address for the tunnel:"
-read CLIENT_IPV6_ADDR
-if [[ ! "$CLIENT_IPV6_ADDR" ]]; then
-  echo "● Client IPv6 address can't be empty"
-  exit 1
-fi
-
-####
-echo "↓ Server IPv6 address for the tunnel:"
-read SERVER_IPV6_ADDR
-if [[ ! "$SERVER_IPV6_ADDR" ]]; then
-  echo "● Server IPv6 address can't be empty"
-  exit 1
-fi
-
-####
 echo "↓ Proxies login (can be blank):"
 read PROXY_LOGIN
 
@@ -101,8 +85,6 @@ echo "● Network Mask: $PROXY_NET_MASK"
 HOST_IPV4_ADDR=$(hostname -I | awk '{print $1}')
 echo "● Host IPv4 address: $HOST_IPV4_ADDR"
 echo "● Tunnel IPv4 address: $TUNNEL_IPV4_ADDR"
-echo "● Client IPv6 address: $CLIENT_IPV6_ADDR"
-echo "● Server IPv6 address: $SERVER_IPV6_ADDR"
 echo "● Proxies count: $PROXY_COUNT, starting from port: $PROXY_START_PORT"
 echo "● Proxies protocol: $PROXY_PROTOCOL"
 if [[ "$PROXY_LOGIN" ]]; then
@@ -127,36 +109,34 @@ done
 ####
 echo ">-- Setting up sysctl.conf"
 cat >>/etc/sysctl.conf <<END
-net.ipv6.conf.all.forwarding=1
-net.ipv6.conf.default.forwarding=1
+net.ipv6.conf.eth0.proxy_ndp=1
 net.ipv6.conf.all.proxy_ndp=1
-net.ipv6.conf.default.proxy_ndp=1
-net.ipv6.conf.all.accept_ra=2
-net.ipv6.conf.default.accept_ra=2
+net.ipv6.conf.default.forwarding=1
+net.ipv6.conf.all.forwarding=1
+net.ipv6.ip_nonlocal_bind=1
+net.ipv4.ip_local_port_range=1024 64000
+net.ipv6.route.max_size=409600
+net.ipv4.tcp_max_syn_backlog=4096
+net.ipv6.neigh.default.gc_thresh3=102400
+kernel.threads-max=1200000
+kernel.max_map_count=6000000
+vm.max_map_count=6000000
+kernel.pid_max=2000000
 END
 
 ####
-echo ">-- Setting up IPv6 tunnel"
-if ip tunnel show he-ipv6 > /dev/null 2>&1; then
-    echo "Tunnel he-ipv6 already exists. Removing it..."
-    ip tunnel del he-ipv6
-fi
-check_command ip tunnel add he-ipv6 mode sit remote $TUNNEL_IPV4_ADDR local $HOST_IPV4_ADDR ttl 255
-check_command ip link set he-ipv6 up
-check_command ip addr add $CLIENT_IPV6_ADDR dev he-ipv6
-check_command ip -6 route add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6
-SERVER_IPV6_ADDR_NO_MASK=$(echo $SERVER_IPV6_ADDR | cut -d'/' -f1)
+echo ">-- Setting up logind.conf"
+echo "UserTasksMax=1000000" >>/etc/systemd/logind.conf
 
-# Replace the default route
-check_command ip -6 route replace default via $SERVER_IPV6_ADDR_NO_MASK dev he-ipv6
-
-# Remove any conflicting routes
-ip -6 route del default via fe80::1 dev eth0 2>/dev/null || true
-ip -6 route del 2000::/3 dev he-ipv6 2>/dev/null || true
-
-
-# Apply sysctl changes
-sysctl -p
+####
+echo ">-- Setting up system.conf"
+cat >>/etc/systemd/system.conf <<END
+UserTasksMax=1000000
+DefaultMemoryAccounting=no
+DefaultTasksAccounting=no
+DefaultTasksMax=1000000
+UserTasksMax=1000000
+END
 
 ####
 echo ">-- Setting up ndppd"
@@ -258,11 +238,13 @@ ulimit -u 600000
 ulimit -i 1200000
 ulimit -s 1000000
 ulimit -l 200000
-/sbin/ip tunnel add he-ipv6 mode sit remote $TUNNEL_IPV4_ADDR local $HOST_IPV4_ADDR ttl 255
+/sbin/ip addr add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6
+sleep 5
+/sbin/ip -6 route add default via ${PROXY_NETWORK}::1
+/sbin/ip -6 route add local ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev lo
+/sbin/ip tunnel add he-ipv6 mode sit remote ${TUNNEL_IPV4_ADDR} local ${HOST_IPV4_ADDR} ttl 255
 /sbin/ip link set he-ipv6 up
-/sbin/ip addr add $CLIENT_IPV6_ADDR dev he-ipv6
-/sbin/ip -6 route add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6
-/sbin/ip -6 route replace default via ${SERVER_IPV6_ADDR%/*} dev he-ipv6
+/sbin/ip -6 route add 2000::/3 dev he-ipv6
 ~/ndppd/ndppd -d -c ~/ndppd/ndppd.conf
 sleep 2
 ~/3proxy/src/3proxy ~/3proxy/3proxy.cfg
@@ -272,59 +254,30 @@ END
 /bin/chmod +x /etc/rc.local
 
 ####
-####
 echo ">-- Verifying setup"
 
-# Start ndppd
-echo "Starting ndppd..."
-~/ndppd/ndppd -d -c ~/ndppd/ndppd.conf
-
-# Give ndppd a moment to start
-sleep 2
-
-# Check if ndppd is running
+# Check if services are running
 if ! pgrep ndppd >/dev/null; then
-  echo "Error: ndppd failed to start. Checking logs..."
-  tail -n 20 /var/log/syslog
+  echo "Error: ndppd is not running" >&2
   exit 1
 fi
 
-# Start 3proxy
-echo "Starting 3proxy..."
-~/3proxy/src/3proxy ~/3proxy/3proxy.cfg
-
-# Give 3proxy a moment to start
-sleep 2
-
-# Check if 3proxy is running
 if ! pgrep 3proxy >/dev/null; then
-  echo "Error: 3proxy failed to start. Checking logs..."
-  tail -n 20 /var/log/syslog
+  echo "Error: 3proxy is not running" >&2
   exit 1
 fi
 
 # Check IPv6 connectivity
 if ! ping6 -c3 google.com &>/dev/null; then
-  echo "Error: IPv6 connectivity not working after setup"
-  echo "Checking IPv6 configuration..."
-  ip -6 addr show
-  ip -6 route show
+  echo "Error: IPv6 connectivity not working after setup" >&2
   exit 1
 fi
 
 # Check IPv6 tunnel
 if ! ip -6 addr show dev he-ipv6 >/dev/null 2>&1; then
-  echo "Error: IPv6 tunnel (he-ipv6) is not set up correctly"
-  echo "Tunnel configuration:"
-  ip tunnel show he-ipv6
+  echo "Error: IPv6 tunnel (he-ipv6) is not set up correctly" >&2
   exit 1
 fi
 
-echo "Setup completed successfully. IPv6 configuration:"
-ip -6 addr show
-ip -6 route show
-
-echo "Testing IPv6 connectivity:"
-ping6 -c 4 2001:4860:4860::8888
-
-echo "If everything looks good, you may want to reboot now to ensure all changes take effect."
+echo "Setup completed successfully. Rebooting now..."
+reboot now
