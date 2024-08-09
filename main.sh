@@ -96,10 +96,10 @@ fi
 echo "-------------------------------------------------"
 echo ">-- Updating packages and installing dependencies"
 check_command apt-get update
-check_command apt-get -y install gcc g++ make bc pwgen git
+check_command apt-get -y install gcc g++ make bc pwgen git net-tools
 
 # Verify package installation
-for pkg in gcc g++ make bc pwgen git; do
+for pkg in gcc g++ make bc pwgen git net-tools; do
   if ! dpkg -s $pkg >/dev/null 2>&1; then
     echo "Error: Failed to install $pkg" >&2
     exit 1
@@ -156,6 +156,30 @@ proxy he-ipv6 {
    }
 }
 END
+
+####
+echo ">-- Setting up Netplan for IPv6 Tunnel"
+
+cat >/etc/netplan/99-ipv6-tunnel.yaml <<END
+network:
+  version: 2
+  ethernets:
+    eth0: # Make sure this is your actual network interface
+      dhcp4: yes
+  tunnels:
+    he-ipv6:
+      interface-type: sit
+      local: ${HOST_IPV4_ADDR}
+      remote: ${TUNNEL_IPV4_ADDR}
+      addresses: [${PROXY_NETWORK}::2/64]
+      routes:
+        - to: 2000::/3
+          via: ${PROXY_NETWORK}::1
+        - to: default
+          via: ${PROXY_NETWORK}::1
+END
+
+check_command netplan apply
 
 ####
 echo ">-- Setting up 3proxy"
@@ -238,13 +262,6 @@ ulimit -u 600000
 ulimit -i 1200000
 ulimit -s 1000000
 ulimit -l 200000
-/sbin/ip addr add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6
-sleep 5
-/sbin/ip -6 route add default via ${PROXY_NETWORK}::1
-/sbin/ip -6 route add local ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev lo
-/sbin/ip tunnel add he-ipv6 mode sit remote ${TUNNEL_IPV4_ADDR} local ${HOST_IPV4_ADDR} ttl 255
-/sbin/ip link set he-ipv6 up
-/sbin/ip -6 route add 2000::/3 dev he-ipv6
 ~/ndppd/ndppd -d -c ~/ndppd/ndppd.conf
 sleep 2
 ~/3proxy/src/3proxy ~/3proxy/3proxy.cfg
