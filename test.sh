@@ -141,6 +141,20 @@ make
 sudo make install
 check_command "Failed to install 3proxy"
 
+# Create necessary directories and set permissions
+sudo mkdir -p /usr/local/3proxy/libexec /etc/3proxy/conf /var/log /var/run/3proxy
+sudo chmod -R a-w /usr/local/3proxy/libexec
+sudo touch /etc/3proxy/conf/counters /etc/3proxy/conf/bandlimiters
+sudo chmod 0600 /etc/3proxy/conf/counters /etc/3proxy/conf/bandlimiters
+
+# Install configuration files
+sudo cp scripts/3proxy.cfg.sample /etc/3proxy/3proxy.cfg
+sudo cp scripts/add3proxyuser.sh /etc/3proxy/conf/
+
+# Install systemd service file
+sudo cp scripts/3proxy.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
 # Create 3proxy configuration script
 echo "Creating 3proxy configuration script..."
 cat << EOF > /app/proxy/ipv6-socks5-proxy/genproxy.sh
@@ -168,6 +182,7 @@ flush
 auth strong
 users \$user:CL:\$pass
 allow \$user
+
 EOC
 
 for i in \$(cat /app/proxy/ipv6-socks5-proxy/ip.list); do
@@ -185,7 +200,9 @@ echo "Generating 3proxy configuration..."
 
 # Restart networking and 3proxy
 echo "Restarting networking and 3proxy..."
-sudo systemctl restart networking
-sudo systemctl restart 3proxy
+sudo systemctl restart networking || echo "Networking restart failed, please check manually after reboot"
+sudo systemctl enable 3proxy
+sudo systemctl start 3proxy
 
-echo "Setup completed successfully. Please reboot your system to apply all changes."
+echo "Setup completed. Please reboot your system to apply all changes."
+echo "After reboot, check the status of 3proxy with: systemctl status 3proxy"
