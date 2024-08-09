@@ -6,6 +6,20 @@ get_input() {
     echo $value
 }
 
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Check and install necessary packages
+install_packages() {
+    if ! command_exists git || ! command_exists make; then
+        echo "Installing necessary packages..."
+        sudo apt-get update
+        sudo apt-get install -y git make build-essential
+    fi
+}
+
 # Get user inputs
 ipv6_prefix=$(get_input "Enter your Routed /48 or /64 IPv6 prefix from tunnelbroker")
 server_ipv4=$(get_input "Enter your Server IPv4 address from tunnelbroker")
@@ -15,6 +29,9 @@ port_start=$(get_input "Enter port numbering start (default 1500)")
 port_start=${port_start:-1500}
 proxy_count=$(get_input "Enter number of proxies to create (default 1)")
 proxy_count=${proxy_count:-1}
+
+# Install necessary packages
+install_packages
 
 # Create necessary directories
 sudo mkdir -p /app/proxy/ipv6-socks5-proxy
@@ -58,11 +75,11 @@ done < ip.list
 chmod +x ifacedown.sh
 
 # Configure network interface
-cat << EOF | sudo tee /etc/network/interfaces
+sudo tee /etc/network/interfaces << EOF
 auto he-ipv6
 iface he-ipv6 inet6 v4tunnel
         address ${ipv6_prefix}::2
-        netmask 48
+        netmask 64
         endpoint $server_ipv4
         local $(hostname -I | awk '{print $1}')
         ttl 255
@@ -85,12 +102,13 @@ root soft nofile 500000
 * soft nproc 4000
 * hard nproc 16000
 root - memlock unlimited
+EOF
+
+sudo tee -a /etc/sysctl.conf << EOF
 net.ipv4.tcp_fin_timeout = 10
 net.ipv4.tcp_max_syn_backlog = 4096
 net.ipv4.tcp_synack_retries = 3
 net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_max_syn_backlog = 2048
-net.ipv4.tcp_synack_retries = 3
 EOF
 
 sudo tee -a /etc/systemd/system.conf /etc/systemd/user.conf << EOF
@@ -106,16 +124,21 @@ EOF
 
 # Install and configure 3proxy
 cd /app/proxy/ipv6-socks5-proxy
-git clone https://github.com/z3APA3A/3proxy.git
+if [ ! -d "3proxy" ]; then
+    git clone https://github.com/z3APA3A/3proxy.git
+fi
 cd 3proxy
-ln -s Makefile.Linux Makefile
+ln -sf Makefile.Linux Makefile
 echo "#define ANONYMOUS 1" > src/define.txt
 sed -i '31r src/define.txt' src/proxy.h
 make
 sudo make install
 
+# Create 3proxy configuration directory if it doesn't exist
+sudo mkdir -p /etc/3proxy
+
 # Create 3proxy configuration
-cat << EOF > /etc/3proxy/3proxy.cfg
+sudo tee /etc/3proxy/3proxy.cfg << EOF
 daemon
 maxconn 300
 nserver [2606:4700:4700::1111]
@@ -138,12 +161,29 @@ EOF
 # Add proxy entries to 3proxy configuration
 current_port=$port_start
 while read -r ip; do
-    echo "proxy -6 -s0 -n -a -olSO_REUSEADDR,SO_REUSEPORT -ocTCP_TIMESTAMPS,TCP_NODELAY -osTCP_NODELAY,SO_KEEPALIVE -p$current_port -i$server_ipv4 -e$ip" >> /etc/3proxy/3proxy.cfg
+    echo "proxy -6 -s0 -n -a -olSO_REUSEADDR,SO_REUSEPORT -ocTCP_TIMESTAMPS,TCP_NODELAY -osTCP_NODELAY,SO_KEEPALIVE -p$current_port -i$server_ipv4 -e$ip" | sudo tee -a /etc/3proxy/3proxy.cfg
     echo "http://$proxy_login:$proxy_password@$server_ipv4:$current_port" >> proxies.txt
     ((current_port++))
 done < ip.list
 
-# Restart 3proxy service
-sudo systemctl restart 3proxy
+# Create systemd service file for 3proxy
+sudo tee /etc/systemd/system/3proxy.service << EOF
+[Unit]
+Description=3proxy Proxy Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/3proxy /etc/3proxy/3proxy.cfg
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Reload systemd, enable and start 3proxy service
+sudo systemctl daemon-reload
+sudo systemctl enable 3proxy
+sudo systemctl start 3proxy
 
 echo "Setup complete. Proxy list saved in proxies.txt"
+echo "Please reboot your system for all changes to take effect."
