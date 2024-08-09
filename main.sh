@@ -43,6 +43,22 @@ if [[ ! "$TUNNEL_IPV4_ADDR" ]]; then
 fi
 
 ####
+echo "↓ Client IPv6 address for the tunnel:"
+read CLIENT_IPV6_ADDR
+if [[ ! "$CLIENT_IPV6_ADDR" ]]; then
+  echo "● Client IPv6 address can't be empty"
+  exit 1
+fi
+
+####
+echo "↓ Server IPv6 address for the tunnel:"
+read SERVER_IPV6_ADDR
+if [[ ! "$SERVER_IPV6_ADDR" ]]; then
+  echo "● Server IPv6 address can't be empty"
+  exit 1
+fi
+
+####
 echo "↓ Proxies login (can be blank):"
 read PROXY_LOGIN
 
@@ -85,6 +101,8 @@ echo "● Network Mask: $PROXY_NET_MASK"
 HOST_IPV4_ADDR=$(hostname -I | awk '{print $1}')
 echo "● Host IPv4 address: $HOST_IPV4_ADDR"
 echo "● Tunnel IPv4 address: $TUNNEL_IPV4_ADDR"
+echo "● Client IPv6 address: $CLIENT_IPV6_ADDR"
+echo "● Server IPv6 address: $SERVER_IPV6_ADDR"
 echo "● Proxies count: $PROXY_COUNT, starting from port: $PROXY_START_PORT"
 echo "● Proxies protocol: $PROXY_PROTOCOL"
 if [[ "$PROXY_LOGIN" ]]; then
@@ -109,34 +127,28 @@ done
 ####
 echo ">-- Setting up sysctl.conf"
 cat >>/etc/sysctl.conf <<END
-net.ipv6.conf.eth0.proxy_ndp=1
-net.ipv6.conf.all.proxy_ndp=1
-net.ipv6.conf.default.forwarding=1
 net.ipv6.conf.all.forwarding=1
-net.ipv6.ip_nonlocal_bind=1
-net.ipv4.ip_local_port_range=1024 64000
-net.ipv6.route.max_size=409600
-net.ipv4.tcp_max_syn_backlog=4096
-net.ipv6.neigh.default.gc_thresh3=102400
-kernel.threads-max=1200000
-kernel.max_map_count=6000000
-vm.max_map_count=6000000
-kernel.pid_max=2000000
+net.ipv6.conf.default.forwarding=1
+net.ipv6.conf.all.proxy_ndp=1
+net.ipv6.conf.default.proxy_ndp=1
+net.ipv6.conf.all.accept_ra=2
+net.ipv6.conf.default.accept_ra=2
 END
 
 ####
-echo ">-- Setting up logind.conf"
-echo "UserTasksMax=1000000" >>/etc/systemd/logind.conf
+echo ">-- Setting up IPv6 tunnel"
+check_command ip tunnel add he-ipv6 mode sit remote $TUNNEL_IPV4_ADDR local $HOST_IPV4_ADDR ttl 255
+check_command ip link set he-ipv6 up
+check_command ip addr add $CLIENT_IPV6_ADDR dev he-ipv6
+check_command ip -6 route add $PROXY_NETWORK dev he-ipv6
+check_command ip -6 route add default via $SERVER_IPV6_ADDR dev he-ipv6
 
-####
-echo ">-- Setting up system.conf"
-cat >>/etc/systemd/system.conf <<END
-UserTasksMax=1000000
-DefaultMemoryAccounting=no
-DefaultTasksAccounting=no
-DefaultTasksMax=1000000
-UserTasksMax=1000000
-END
+# Remove any conflicting routes
+ip -6 route del default via fe80::1 dev eth0 2>/dev/null || true
+ip -6 route del 2000::/3 dev he-ipv6 2>/dev/null || true
+
+# Apply sysctl changes
+sysctl -p
 
 ####
 echo ">-- Setting up ndppd"
@@ -238,13 +250,11 @@ ulimit -u 600000
 ulimit -i 1200000
 ulimit -s 1000000
 ulimit -l 200000
-/sbin/ip addr add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6
-sleep 5
-/sbin/ip -6 route add default via ${PROXY_NETWORK}::1
-/sbin/ip -6 route add local ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev lo
-/sbin/ip tunnel add he-ipv6 mode sit remote ${TUNNEL_IPV4_ADDR} local ${HOST_IPV4_ADDR} ttl 255
+/sbin/ip tunnel add he-ipv6 mode sit remote $TUNNEL_IPV4_ADDR local $HOST_IPV4_ADDR ttl 255
 /sbin/ip link set he-ipv6 up
-/sbin/ip -6 route add 2000::/3 dev he-ipv6
+/sbin/ip addr add $CLIENT_IPV6_ADDR dev he-ipv6
+/sbin/ip -6 route add $PROXY_NETWORK dev he-ipv6
+/sbin/ip -6 route add default via $SERVER_IPV6_ADDR dev he-ipv6
 ~/ndppd/ndppd -d -c ~/ndppd/ndppd.conf
 sleep 2
 ~/3proxy/src/3proxy ~/3proxy/3proxy.cfg
