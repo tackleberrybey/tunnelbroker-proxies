@@ -112,12 +112,10 @@ kernel.threads-max = 1200000
 kernel.pid_max = 2000000
 EOL
 
-  # Try setting max_map_count if it exists
-  if [[ -f /proc/sys/kernel/max_map_count ]]; then
-    echo "vm.max_map_count = 6000000" >> /etc/sysctl.conf
-  fi
-
   check_command sysctl -p /etc/sysctl.conf
+
+  # Set vm.max_map_count (this does not use sysctl)
+  echo "vm.max_map_count = 6000000" > /etc/sysctl.d/99-max-map-count.conf
 
   echo ">-- Setting up logind.conf"
   echo "UserTasksMax=1000000" >> /etc/systemd/logind.conf
