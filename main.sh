@@ -144,7 +144,7 @@ cd ~
 check_command git clone --quiet https://github.com/DanielAdolfsson/ndppd.git
 cd ~/ndppd
 
-# Suppress -Wunused-result warning during compilation
+# Suppress -Wunused-result warning during compilation (if it appears)
 sed -i 's/system(/system(//g' src/session.cc
 check_command make -k all
 check_command make -k install
@@ -171,7 +171,7 @@ network:
       dhcp4: yes
   tunnels:
     he-ipv6:
-      interface-type: sit # Use interface-type for older Netplan versions
+      type: sit # Correct key for your Netplan version
       local: ${HOST_IPV4_ADDR}
       remote: ${TUNNEL_IPV4_ADDR}
       addresses: [${PROXY_NETWORK}::2/64]
