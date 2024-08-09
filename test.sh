@@ -11,14 +11,21 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Check and install necessary packages
+# Function to install packages
 install_packages() {
-    if ! command_exists git || ! command_exists make; then
-        echo "Installing necessary packages..."
-        sudo apt-get update
-        sudo apt-get install -y git make build-essential
+    echo "Installing necessary packages..."
+    sudo apt-get update
+    sudo apt-get install -y git make build-essential curl wget
+    if [ $? -ne 0 ]; then
+        echo "Failed to install packages. Please check your internet connection and try again."
+        exit 1
     fi
 }
+
+# Check and install necessary packages
+if ! command_exists git || ! command_exists make; then
+    install_packages
+fi
 
 # Get user inputs
 ipv6_prefix=$(get_input "Enter your Routed /48 or /64 IPv6 prefix from tunnelbroker")
@@ -30,13 +37,10 @@ port_start=${port_start:-1500}
 proxy_count=$(get_input "Enter number of proxies to create (default 1)")
 proxy_count=${proxy_count:-1}
 
-# Install necessary packages
-install_packages
-
 # Create necessary directories
 sudo mkdir -p /app/proxy/ipv6-socks5-proxy
 sudo chown -R $USER:$USER /app/proxy/ipv6-socks5-proxy
-cd /app/proxy/ipv6-socks5-proxy
+cd /app/proxy/ipv6-socks5-proxy || exit
 
 # Generate IPv6 addresses
 echo ">-- Generating IPv6 addresses"
@@ -123,15 +127,23 @@ DefaultLimitMEMLOCK=infinity
 EOF
 
 # Install and configure 3proxy
-cd /app/proxy/ipv6-socks5-proxy
+cd /app/proxy/ipv6-socks5-proxy || exit
 if [ ! -d "3proxy" ]; then
     git clone https://github.com/z3APA3A/3proxy.git
+    if [ $? -ne 0 ]; then
+        echo "Failed to clone 3proxy repository. Please check your internet connection and try again."
+        exit 1
+    fi
 fi
-cd 3proxy
+cd 3proxy || exit
 ln -sf Makefile.Linux Makefile
 echo "#define ANONYMOUS 1" > src/define.txt
 sed -i '31r src/define.txt' src/proxy.h
 make
+if [ $? -ne 0 ]; then
+    echo "Failed to compile 3proxy. Please check for any errors and try again."
+    exit 1
+fi
 sudo make install
 
 # Create 3proxy configuration directory if it doesn't exist
