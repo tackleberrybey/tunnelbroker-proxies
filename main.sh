@@ -143,6 +143,9 @@ echo ">-- Setting up ndppd"
 cd ~
 check_command git clone --quiet https://github.com/DanielAdolfsson/ndppd.git
 cd ~/ndppd
+
+# Suppress -Wunused-result warning during compilation
+sed -i 's/system(/system(//g' src/session.cc
 check_command make -k all
 check_command make -k install
 cat >~/ndppd/ndppd.conf <<END
@@ -168,7 +171,7 @@ network:
       dhcp4: yes
   tunnels:
     he-ipv6:
-      type: sit 
+      interface-type: sit # Use interface-type for older Netplan versions
       local: ${HOST_IPV4_ADDR}
       remote: ${TUNNEL_IPV4_ADDR}
       addresses: [${PROXY_NETWORK}::2/64]
