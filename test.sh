@@ -1,115 +1,84 @@
 #!/bin/bash
 
-# Function to check IPv6 connectivity
-check_ipv6() {
-    if ping6 -c3 google.com &>/dev/null; then
-        echo "Your server is ready to set up IPv6 proxies!"
-    else
-        echo "Your server can't connect to IPv6 addresses."
-        echo "Please connect an IPv6 interface to your server to continue."
+# Function to check if a command was successful
+check_command() {
+    if [ $? -ne 0 ]; then
+        echo "Error: $1"
         exit 1
     fi
 }
 
-# Function to get user input
-get_input() {
-    echo "↓ Routed /48 or /64 IPv6 prefix from tunnelbroker (*:*:*::/*):"
-    read PROXY_NETWORK
+# Update and install dependencies
+echo "Updating and installing dependencies..."
+sudo apt update && sudo apt upgrade -y
+sudo apt-get install -y git mc make htop build-essential speedtest-cli curl wget ncdu tmux psmisc net-tools
+check_command "Failed to install dependencies"
 
-    if [[ $PROXY_NETWORK == *"::/48"* ]]; then
-        PROXY_NET_MASK=48
-    elif [[ $PROXY_NETWORK == *"::/64"* ]]; then
-        PROXY_NET_MASK=64
-    else
-        echo "● Unsupported IPv6 prefix format: $PROXY_NETWORK"
-        exit 1
-    fi
+# Create directory structure
+echo "Creating directory structure..."
+sudo mkdir -p /app/proxy/ipv6-socks5-proxy
+sudo chown -R $USER:$USER /app/proxy/ipv6-socks5-proxy
+cd /app/proxy/ipv6-socks5-proxy
 
-    echo "↓ Server IPv4 address:"
-    read HOST_IPV4_ADDR
+# Get user input
+echo "Enter your IPv6 prefix (e.g., 2a09:4c0:aee0:023d::/64):"
+read IPV6_PREFIX
+echo "Enter the number of IPs to generate:"
+read IP_COUNT
+echo "Enter the proxy start port (default: 20000):"
+read -r PROXY_START_PORT
+PROXY_START_PORT=${PROXY_START_PORT:-20000}
+echo "Enter the proxy username:"
+read PROXY_USER
+echo "Enter the proxy password:"
+read -s PROXY_PASS
 
-    echo "↓ Tunnel IPv4 address:"
-    read TUNNEL_IPV4_ADDR
+# Generate IPv6 addresses
+echo "Generating IPv6 addresses..."
+IPV6_PREFIX_EXPANDED=$(echo $IPV6_PREFIX | cut -d'/' -f1)
+for i in $(seq 1 $IP_COUNT); do
+    printf "%s:%04x:%04x:%04x:%04x\n" $IPV6_PREFIX_EXPANDED $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536))
+done > ip.list
 
-    echo "↓ Proxies login (can be blank):"
-    read PROXY_LOGIN
+# Create ifaceup.sh
+echo "Creating ifaceup.sh..."
+echo "#!/bin/bash" > ifaceup.sh
+while read -r ip; do
+    echo "ip -6 addr add $ip dev he-ipv6" >> ifaceup.sh
+done < ip.list
+chmod +x ifaceup.sh
 
-    if [[ "$PROXY_LOGIN" ]]; then
-        echo "↓ Proxies password:"
-        read PROXY_PASS
-    fi
+# Create ifacedown.sh
+echo "Creating ifacedown.sh..."
+echo "#!/bin/bash" > ifacedown.sh
+while read -r ip; do
+    echo "ip -6 addr del $ip dev he-ipv6" >> ifacedown.sh
+done < ip.list
+chmod +x ifacedown.sh
 
-    echo "↓ Port numbering start (default 20000):"
-    read PROXY_START_PORT
-    PROXY_START_PORT=${PROXY_START_PORT:-20000}
-
-    echo "↓ Proxies count (default 500):"
-    read PROXY_COUNT
-    PROXY_COUNT=${PROXY_COUNT:-500}
-}
-
-# Function to update and install dependencies
-update_and_install() {
-    apt update && apt upgrade -y
-    apt-get install -y git mc make htop build-essential speedtest-cli curl wget ncdu tmux psmisc net-tools
-}
-
-# Function to set up directories
-setup_directories() {
-    mkdir -p /app/proxy/ipv6-socks5-proxy
-    chown -R $USER:$USER /app/proxy/ipv6-socks5-proxy
-    cd /app/proxy/ipv6-socks5-proxy
-}
-
-# Function to generate IPv6 addresses
-generate_ipv6_addresses() {
-    # This is a simplified version. You might want to use a more sophisticated method
-    for i in $(seq 1 $PROXY_COUNT); do
-        printf "$PROXY_NETWORK:%04x:%04x:%04x:%04x\n" $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536)) >> ip.list
-    done
-}
-
-# Function to create interface scripts
-create_interface_scripts() {
-    # Create ifaceup.sh
-    echo "#!/bin/bash" > ifaceup.sh
-    while read -r ip; do
-        echo "ip -6 addr add $ip dev he-ipv6" >> ifaceup.sh
-    done < ip.list
-    chmod +x ifaceup.sh
-
-    # Create ifacedown.sh
-    echo "#!/bin/bash" > ifacedown.sh
-    while read -r ip; do
-        echo "ip -6 addr del $ip dev he-ipv6" >> ifacedown.sh
-    done < ip.list
-    chmod +x ifacedown.sh
-}
-
-# Function to configure network interface
-configure_network_interface() {
-    cat > /etc/network/interfaces.d/he-ipv6 <<EOF
+# Configure network interface
+echo "Configuring network interface..."
+cat << EOF | sudo tee -a /etc/network/interfaces
 auto he-ipv6
 iface he-ipv6 inet6 v4tunnel
-        address ${PROXY_NETWORK}::2
-        netmask $PROXY_NET_MASK
-        endpoint $TUNNEL_IPV4_ADDR
-        local $HOST_IPV4_ADDR
+        address ${IPV6_PREFIX_EXPANDED}::2
+        netmask 64
+        endpoint 185.181.60.47
+        local 188.245.99.243
         ttl 255
-        gateway ${PROXY_NETWORK}::1
+        gateway ${IPV6_PREFIX_EXPANDED}::1
 
 up /app/proxy/ipv6-socks5-proxy/ifaceup.sh
 down /app/proxy/ipv6-socks5-proxy/ifacedown.sh
 EOF
-}
 
-# Function to adjust kernel parameters
-adjust_kernel_parameters() {
-    cat >> /etc/sysctl.conf <<EOF
+# Configure kernel parameters
+echo "Configuring kernel parameters..."
+sudo tee -a /etc/sysctl.conf << EOF
 fs.file-max = 500000
 EOF
 
-    cat >> /etc/security/limits.conf <<EOF
+sudo tee -a /etc/security/limits.conf << EOF
 * hard nofile 500000
 * soft nofile 500000
 root hard nofile 500000
@@ -119,7 +88,7 @@ root soft nofile 500000
 root - memlock unlimited
 EOF
 
-    cat >> /etc/systemd/system.conf <<EOF
+sudo tee -a /etc/systemd/system.conf << EOF
 DefaultLimitDATA=infinity
 DefaultLimitSTACK=infinity
 DefaultLimitCORE=infinity
@@ -130,7 +99,7 @@ DefaultLimitNPROC=10240
 DefaultLimitMEMLOCK=infinity
 EOF
 
-    cat >> /etc/systemd/user.conf <<EOF
+sudo tee -a /etc/systemd/user.conf << EOF
 DefaultLimitDATA=infinity
 DefaultLimitSTACK=infinity
 DefaultLimitCORE=infinity
@@ -140,65 +109,57 @@ DefaultLimitAS=infinity
 DefaultLimitNPROC=10240
 DefaultLimitMEMLOCK=infinity
 EOF
-}
 
-# Function to install and configure 3proxy
-install_configure_3proxy() {
-    cd /app/proxy/ipv6-socks5-proxy
-    git clone https://github.com/z3APA3A/3proxy.git
-    cd 3proxy
-    ln -s Makefile.Linux Makefile
-    echo "#define ANONYMOUS 1" > src/define.txt
-    sed -i '31r src/define.txt' src/proxy.h
-    make
-    make install
+# Install and configure 3proxy
+echo "Installing and configuring 3proxy..."
+git clone https://github.com/z3APA3A/3proxy.git
+cd 3proxy
+ln -s Makefile.Linux Makefile
+touch src/define.txt
+echo "#define ANONYMOUS 1" > src/define.txt
+sed -i '31r src/define.txt' src/proxy.h
+make
+sudo make install
+cd ..
 
-    # Create 3proxy configuration script
-    cat > /app/proxy/ipv6-socks5-proxy/genproxy48.sh <<EOF
-#!/bin/bash
+# Create 3proxy configuration
+echo "Creating 3proxy configuration..."
+IPV4=$(hostname -I | awk '{print $1}')
+cat << EOF > /etc/3proxy/3proxy.cfg
+daemon
+maxconn 300
+nserver [2606:4700:4700::1111]
+nserver [2606:4700:4700::1001]
+nserver [2001:4860:4860::8888]
+nserver [2001:4860:4860::8844]
+nserver [2a02:6b8::feed:0ff]
+nserver [2a02:6b8:0:1::feed:0ff]
+nscache 65536
+nscache6 65536
+timeouts 1 5 30 60 180 1800 15 60
+stacksize 6000
+flush
+auth strong
+users $PROXY_USER:CL:$PROXY_PASS
+allow $PROXY_USER
 
-ipv4=$HOST_IPV4_ADDR
-portproxy=$PROXY_START_PORT
-user=$PROXY_LOGIN
-pass=$PROXY_PASS
-config="/etc/3proxy/3proxy.cfg"
+EOF
 
-echo -ne > \$config
-echo -ne > /app/proxy/ipv6-socks5-proxy/proxylist.txt
-
-echo "daemon" >> \$config
-echo "maxconn 300" >> \$config
-echo "nserver [2606:4700:4700::1111]" >> \$config
-echo "nserver [2606:4700:4700::1001]" >> \$config
-echo "nscache 65536" >> \$config
-echo "timeouts 1 5 30 60 180 1800 15 60" >> \$config
-echo "stacksize 6000" >> \$config
-echo "flush" >> \$config
-echo "auth strong" >> \$config
-echo "users \$user:CL:\$pass" >> \$config
-echo "allow \$user" >> \$config
-
+PROXY_PORT=$PROXY_START_PORT
 while read -r ip; do
-    echo "proxy -6 -s0 -n -a -p\$portproxy -i\$ipv4 -e\$ip" >> \$config
-    echo "socks5://\$user:\$pass@\$ipv4:\$portproxy" >> /app/proxy/ipv6-socks5-proxy/proxylist.txt
-    ((portproxy+=1))
-done < /app/proxy/ipv6-socks5-proxy/ip.list
-EOF
+    echo "proxy -6 -s0 -n -a -olSO_REUSEADDR,SO_REUSEPORT -ocTCP_TIMESTAMPS,TCP_NODELAY -osTCP_NODELAY,SO_KEEPALIVE -p$PROXY_PORT -i$IPV4 -e$ip" >> /etc/3proxy/3proxy.cfg
+    echo "$IPV4:$PROXY_PORT@$PROXY_USER:$PROXY_PASS;v6;http" >> proxylist_key_collector.txt
+    echo "http://$PROXY_USER:$PROXY_PASS@$IPV4:$PROXY_PORT" >> xevil.txt
+    ((PROXY_PORT++))
+done < ip.list
 
-    chmod +x /app/proxy/ipv6-socks5-proxy/genproxy48.sh
-    /app/proxy/ipv6-socks5-proxy/genproxy48.sh
-}
-
-# Main execution
-check_ipv6
-get_input
-update_and_install
-setup_directories
-generate_ipv6_addresses
-create_interface_scripts
-configure_network_interface
-adjust_kernel_parameters
-install_configure_3proxy
+# Restart services
+echo "Restarting services..."
+sudo systemctl daemon-reload
+sudo systemctl restart networking
+sudo systemctl restart 3proxy
 
 echo "Setup complete. Please reboot your system to apply all changes."
-echo "After reboot, your proxies will be available and listed in /app/proxy/ipv6-socks5-proxy/proxylist.txt"
+echo "After reboot, your proxies will be available. You can find the proxy lists in:"
+echo "- /app/proxy/ipv6-socks5-proxy/proxylist_key_collector.txt"
+echo "- /app/proxy/ipv6-socks5-proxy/xevil.txt"
