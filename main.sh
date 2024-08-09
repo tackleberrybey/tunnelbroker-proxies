@@ -171,7 +171,7 @@ network:
       dhcp4: yes
   tunnels:
     he-ipv6:
-      type: sit # Correct key for your Netplan version
+      interface-type: sit  # Correct key for your Netplan version
       local: ${HOST_IPV4_ADDR}
       remote: ${TUNNEL_IPV4_ADDR}
       addresses: [${PROXY_NETWORK}::2/64]
