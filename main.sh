@@ -140,12 +140,13 @@ echo ">-- Setting up IPv6 tunnel"
 check_command ip tunnel add he-ipv6 mode sit remote $TUNNEL_IPV4_ADDR local $HOST_IPV4_ADDR ttl 255
 check_command ip link set he-ipv6 up
 check_command ip addr add $CLIENT_IPV6_ADDR dev he-ipv6
-check_command ip -6 route add $PROXY_NETWORK dev he-ipv6
+check_command ip -6 route add ${PROXY_NETWORK}::/${PROXY_NET_MASK} dev he-ipv6
 check_command ip -6 route add default via $SERVER_IPV6_ADDR dev he-ipv6
 
 # Remove any conflicting routes
 ip -6 route del default via fe80::1 dev eth0 2>/dev/null || true
 ip -6 route del 2000::/3 dev he-ipv6 2>/dev/null || true
+
 
 # Apply sysctl changes
 sysctl -p
